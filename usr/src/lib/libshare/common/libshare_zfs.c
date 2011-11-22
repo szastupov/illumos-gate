@@ -232,9 +232,10 @@ get_legacy_mountpoint(char *path, char *dataset, size_t dlen,
 {
 	FILE *fp;
 	struct mnttab entry;
+	int rc = 1;
 
 	if ((fp = fopen(MNTTAB, "r")) == NULL) {
-		return (1);
+		return (rc);
 	}
 
 	while (getmntent(fp, &entry) == 0) {
@@ -250,11 +251,12 @@ get_legacy_mountpoint(char *path, char *dataset, size_t dlen,
 			if (dlen > 0)
 				(void) strlcpy(dataset, entry.mnt_special,
 				    dlen);
+			rc = 0;
 			break;
 		}
 	}
 	(void) fclose(fp);
-	return (1);
+	return (rc);
 }
 
 /*

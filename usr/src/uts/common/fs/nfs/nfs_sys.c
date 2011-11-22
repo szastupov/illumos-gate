@@ -80,8 +80,6 @@ nfs_export(void *arg)
 {
 	STRUCT_DECL(exportfs_args, ea);
 
-	if (!INGLOBALZONE(curproc))
-		return (set_errno(EPERM));
 	STRUCT_INIT(ea, get_udatamodel());
 	if (copyin(arg, STRUCT_BUF(ea), STRUCT_SIZE(ea)))
 		return (set_errno(EFAULT));

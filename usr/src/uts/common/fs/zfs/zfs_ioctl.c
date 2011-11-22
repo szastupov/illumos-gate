@@ -635,9 +635,6 @@ zfs_secpolicy_deleg_share(zfs_cmd_t *zc, cred_t *cr)
 int
 zfs_secpolicy_share(zfs_cmd_t *zc, cred_t *cr)
 {
-	if (!INGLOBALZONE(curproc))
-		return (EPERM);
-
 	if (secpolicy_nfs(cr) == 0) {
 		return (0);
 	} else {
