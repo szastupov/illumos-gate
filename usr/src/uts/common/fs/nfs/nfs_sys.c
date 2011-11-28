@@ -162,8 +162,6 @@ nfssys(enum nfssys_op opcode, void *arg)
 		struct rdma_svc_args rsa;
 		char netstore[20] = "tcp";
 
-		if (!INGLOBALZONE(curproc))
-			return (set_errno(EPERM));
 		if (get_udatamodel() != DATAMODEL_NATIVE) {
 			STRUCT_DECL(rdma_svc_args, ursa);
 
