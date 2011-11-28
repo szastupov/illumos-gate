@@ -187,9 +187,6 @@ nfssys(enum nfssys_op opcode, void *arg)
 
 	case NFS_SVC: { /* NFS server daemon */
 		STRUCT_DECL(nfs_svc_args, nsa);
-
-		if (!INGLOBALZONE(curproc))
-			return (set_errno(EPERM));
 		STRUCT_INIT(nsa, get_udatamodel());
 
 		if (copyin(arg, STRUCT_BUF(nsa), STRUCT_SIZE(nsa)))
