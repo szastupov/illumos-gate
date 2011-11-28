@@ -77,17 +77,18 @@ int rfs3_do_post_op_attr = 1;
 int rfs3_do_post_op_fh3 = 1;
 #endif
 
-static writeverf3 write3verf;
-
 static int	sattr3_to_vattr(sattr3 *, struct vattr *);
 static int	vattr_to_fattr3(struct vattr *, fattr3 *);
 static int	vattr_to_wcc_attr(struct vattr *, wcc_attr *);
 static void	vattr_to_pre_op_attr(struct vattr *, pre_op_attr *);
 static void	vattr_to_wcc_data(struct vattr *, struct vattr *, wcc_data *);
 static int	rdma_setup_read_data3(READ3args *, READ3resok *);
+static void	*rfs3_zone_init(zoneid_t);
+static void	rfs3_zone_fini(zoneid_t, void *);
 
 extern int nfs_loaned_buffers;
 
+zone_key_t rfs3_zone_key;
 u_longlong_t nfs3_srv_caller_id;
 
 /* ARGSUSED */
@@ -1335,6 +1336,7 @@ void
 rfs3_write(WRITE3args *args, WRITE3res *resp, struct exportinfo *exi,
 	struct svc_req *req, cred_t *cr)
 {
+	nfs3_srv_t *ns;
 	int error;
 	vnode_t *vp;
 	struct vattr *bvap = NULL;
@@ -1363,6 +1365,7 @@ rfs3_write(WRITE3args *args, WRITE3res *resp, struct exportinfo *exi,
 		goto err;
 	}
 
+	ns = zone_getspecific(rfs3_zone_key, curzone);
 	if (is_system_labeled()) {
 		bslabel_t *clabel = req->rq_label;
 
@@ -1454,7 +1457,7 @@ rfs3_write(WRITE3args *args, WRITE3res *resp, struct exportinfo *exi,
 		vattr_to_wcc_data(bvap, avap, &resp->resok.file_wcc);
 		resp->resok.count = 0;
 		resp->resok.committed = args->stable;
-		resp->resok.verf = write3verf;
+		resp->resok.verf = ns->write3verf;
 		goto out;
 	}
 
@@ -1561,7 +1564,7 @@ rfs3_write(WRITE3args *args, WRITE3res *resp, struct exportinfo *exi,
 	vattr_to_wcc_data(bvap, avap, &resp->resok.file_wcc);
 	resp->resok.count = args->count - uio.uio_resid;
 	resp->resok.committed = args->stable;
-	resp->resok.verf = write3verf;
+	resp->resok.verf = ns->write3verf;
 	goto out;
 
 err:
@@ -4394,6 +4397,7 @@ void
 rfs3_commit(COMMIT3args *args, COMMIT3res *resp, struct exportinfo *exi,
 	struct svc_req *req, cred_t *cr)
 {
+	nfs3_srv_t *ns;
 	int error;
 	vnode_t *vp;
 	struct vattr *bvap;
@@ -4414,6 +4418,7 @@ rfs3_commit(COMMIT3args *args, COMMIT3res *resp, struct exportinfo *exi,
 		goto out;
 	}
 
+	ns = zone_getspecific(rfs3_zone_key, curzone);
 	bva.va_mask = AT_ALL;
 	error = VOP_GETATTR(vp, &bva, 0, cr, NULL);
 
@@ -4481,7 +4486,7 @@ rfs3_commit(COMMIT3args *args, COMMIT3res *resp, struct exportinfo *exi,
 
 	resp->status = NFS3_OK;
 	vattr_to_wcc_data(bvap, avap, &resp->resok.file_wcc);
-	resp->resok.verf = write3verf;
+	resp->resok.verf = ns->write3verf;
 
 	DTRACE_NFSV3_4(op__commit__done, struct svc_req *, req,
 	    cred_t *, cr, vnode_t *, vp, COMMIT3res *, resp);
@@ -4666,48 +4671,8 @@ vattr_to_wcc_data(struct vattr *bvap, struct vattr *avap, wcc_data *wccp)
 void
 rfs3_srvrinit(void)
 {
-	struct rfs3_verf_overlay {
-		uint_t id; /* a "unique" identifier */
-		int ts; /* a unique timestamp */
-	} *verfp;
-	timestruc_t now;
-
-	/*
-	 * The following algorithm attempts to find a unique verifier
-	 * to be used as the write verifier returned from the server
-	 * to the client.  It is important that this verifier change
-	 * whenever the server reboots.  Of secondary importance, it
-	 * is important for the verifier to be unique between two
-	 * different servers.
-	 *
-	 * Thus, an attempt is made to use the system hostid and the
-	 * current time in seconds when the nfssrv kernel module is
-	 * loaded.  It is assumed that an NFS server will not be able
-	 * to boot and then to reboot in less than a second.  If the
-	 * hostid has not been set, then the current high resolution
-	 * time is used.  This will ensure different verifiers each
-	 * time the server reboots and minimize the chances that two
-	 * different servers will have the same verifier.
-	 */
-
-#ifndef	lint
-	/*
-	 * We ASSERT that this constant logic expression is
-	 * always true because in the past, it wasn't.
-	 */
-	ASSERT(sizeof (*verfp) <= sizeof (write3verf));
-#endif
-
-	gethrestime(&now);
-	verfp = (struct rfs3_verf_overlay *)&write3verf;
-	verfp->ts = (int)now.tv_sec;
-	verfp->id = zone_get_hostid(NULL);
-
-	if (verfp->id == 0)
-		verfp->id = (uint_t)now.tv_nsec;
-
 	nfs3_srv_caller_id = fs_new_caller_id();
-
+	zone_key_create(&rfs3_zone_key, rfs3_zone_init, NULL, rfs3_zone_fini);
 }
 
 static int
@@ -4732,4 +4697,62 @@ void
 rfs3_srvrfini(void)
 {
 	/* Nothing to do */
+}
+
+static void *
+rfs3_zone_init(zoneid_t zoneid)
+{
+	nfs3_srv_t *ns;
+	struct rfs3_verf_overlay {
+		uint_t id; /* a "unique" identifier */
+		int ts; /* a unique timestamp */
+	} *verfp;
+	timestruc_t now;
+
+	ns = kmem_zalloc(sizeof (*ns), KM_SLEEP);
+
+	/*
+	 * The following algorithm attempts to find a unique verifier
+	 * to be used as the write verifier returned from the server
+	 * to the client.  It is important that this verifier change
+	 * whenever the server reboots.  Of secondary importance, it
+	 * is important for the verifier to be unique between two
+	 * different servers.
+	 *
+	 * Thus, an attempt is made to use the system hostid and the
+	 * current time in seconds when the nfssrv kernel module is
+	 * loaded.  It is assumed that an NFS server will not be able
+	 * to boot and then to reboot in less than a second.  If the
+	 * hostid has not been set, then the current high resolution
+	 * time is used.  This will ensure different verifiers each
+	 * time the server reboots and minimize the chances that two
+	 * different servers will have the same verifier.
+	 */
+
+#ifndef	lint
+	/*
+	 * We ASSERT that this constant logic expression is
+	 * always true because in the past, it wasn't.
+	 */
+	ASSERT(sizeof (*verfp) <= sizeof (ns->write3verf));
+#endif
+
+	gethrestime(&now);
+	verfp = (struct rfs3_verf_overlay *)&ns->write3verf;
+	verfp->ts = (int)now.tv_sec;
+	verfp->id = zone_get_hostid(NULL);
+
+	if (verfp->id == 0)
+		verfp->id = (uint_t)now.tv_nsec;
+
+	return (ns);
+}
+
+static void
+rfs3_zone_fini(zoneid_t zoneid, void *data)
+{
+	nfs3_srv_t *ns;
+
+	ns = (nfs3_srv_t *)data;
+	kmem_free(ns, sizeof (*ns));
 }
