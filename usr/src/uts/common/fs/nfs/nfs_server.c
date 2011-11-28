@@ -104,6 +104,7 @@ static struct modlinkage modlinkage = {
 	MODREV_1, (void *)&modlmisc, NULL
 };
 
+zone_key_t nfssrv_zone_key;
 kmem_cache_t *nfs_xuio_cache;
 int nfs_loaned_buffers = 0;
 
@@ -177,7 +178,7 @@ _info(struct modinfo *modinfop)
 		fsid, xfid))))
 
 static void	nfs_srv_shutdown_all(int);
-static void	rfs4_server_start(int);
+static void	rfs4_server_start(struct nfs_globals *, int);
 static void	nullfree(void);
 static void	rfs_dispatch(struct svc_req *, SVCXPRT *);
 static void	acl_dispatch(struct svc_req *, SVCXPRT *);
@@ -191,6 +192,8 @@ static char	*client_name(struct svc_req *req);
 static char	*client_addr(struct svc_req *req, char *buf);
 extern	int	sec_svc_getcred(struct svc_req *, cred_t *cr, char **, int *);
 extern	bool_t	sec_svc_inrootlist(int, caddr_t, int, caddr_t *);
+static void	*nfs_srv_zone_init(zoneid_t);
+static void	nfs_srv_zone_fini(zoneid_t, void *);
 
 #define	NFSLOG_COPY_NETBUF(exi, xprt, nb)	{		\
 	(nb)->maxlen = (xprt)->xp_rtaddr.maxlen;		\
@@ -241,24 +244,6 @@ static SVC_CALLOUT __nfs_sc_rdma[] = {
 static SVC_CALLOUT_TABLE nfs_sct_rdma = {
 	sizeof (__nfs_sc_rdma) / sizeof (__nfs_sc_rdma[0]), FALSE, __nfs_sc_rdma
 };
-rpcvers_t nfs_versmin = NFS_VERSMIN_DEFAULT;
-rpcvers_t nfs_versmax = NFS_VERSMAX_DEFAULT;
-
-/*
- * Used to track the state of the server so that initialization
- * can be done properly.
- */
-typedef enum {
-	NFS_SERVER_STOPPED,	/* server state destroyed */
-	NFS_SERVER_STOPPING,	/* server state being destroyed */
-	NFS_SERVER_RUNNING,
-	NFS_SERVER_QUIESCED,	/* server state preserved */
-	NFS_SERVER_OFFLINE	/* server pool offline */
-} nfs_server_running_t;
-
-static nfs_server_running_t nfs_server_upordown;
-static kmutex_t nfs_server_upordown_lock;
-static	kcondvar_t nfs_server_upordown_cv;
 
 /*
  * DSS: distributed stable storage
@@ -270,12 +255,6 @@ int rfs4_dispatch(struct rpcdisp *, struct svc_req *, SVCXPRT *, char *);
 bool_t rfs4_minorvers_mismatch(struct svc_req *, SVCXPRT *, void *);
 
 /*
- * RDMA wait variables.
- */
-static kcondvar_t rdma_wait_cv;
-static kmutex_t rdma_wait_mutex;
-
-/*
  * Will be called at the point the server pool is being unregistered
  * from the pool list. From that point onwards, the pool is waiting
  * to be drained and as such the server state is stale and pertains
@@ -284,11 +263,15 @@ static kmutex_t rdma_wait_mutex;
 void
 nfs_srv_offline(void)
 {
-	mutex_enter(&nfs_server_upordown_lock);
-	if (nfs_server_upordown == NFS_SERVER_RUNNING) {
-		nfs_server_upordown = NFS_SERVER_OFFLINE;
+	struct nfs_globals *ng;
+
+	ng = zone_getspecific(nfssrv_zone_key, curzone);
+
+	mutex_enter(&ng->nfs_server_upordown_lock);
+	if (ng->nfs_server_upordown == NFS_SERVER_RUNNING) {
+		ng->nfs_server_upordown = NFS_SERVER_OFFLINE;
 	}
-	mutex_exit(&nfs_server_upordown_lock);
+	mutex_exit(&ng->nfs_server_upordown_lock);
 }
 
 /*
@@ -318,12 +301,15 @@ nfs_srv_quiesce_all(void)
 
 static void
 nfs_srv_shutdown_all(int quiesce) {
-	mutex_enter(&nfs_server_upordown_lock);
+	struct nfs_globals *ng;
+
+	ng = zone_getspecific(nfssrv_zone_key, curzone);
+	mutex_enter(&ng->nfs_server_upordown_lock);
 	if (quiesce) {
-		if (nfs_server_upordown == NFS_SERVER_RUNNING ||
-			nfs_server_upordown == NFS_SERVER_OFFLINE) {
-			nfs_server_upordown = NFS_SERVER_QUIESCED;
-			cv_signal(&nfs_server_upordown_cv);
+		if (ng->nfs_server_upordown == NFS_SERVER_RUNNING ||
+			ng->nfs_server_upordown == NFS_SERVER_OFFLINE) {
+			ng->nfs_server_upordown = NFS_SERVER_QUIESCED;
+			cv_signal(&ng->nfs_server_upordown_cv);
 
 			/* reset DSS state, for subsequent warm restart */
 			rfs4_dss_numnewpaths = 0;
@@ -333,17 +319,17 @@ nfs_srv_shutdown_all(int quiesce) {
 			    "NFSv4 state has been preserved");
 		}
 	} else {
-		if (nfs_server_upordown == NFS_SERVER_OFFLINE) {
-			nfs_server_upordown = NFS_SERVER_STOPPING;
-			mutex_exit(&nfs_server_upordown_lock);
+		if (ng->nfs_server_upordown == NFS_SERVER_OFFLINE) {
+			ng->nfs_server_upordown = NFS_SERVER_STOPPING;
+			mutex_exit(&ng->nfs_server_upordown_lock);
 			rfs4_state_fini();
 			rfs4_fini_drc(nfs4_drc);
-			mutex_enter(&nfs_server_upordown_lock);
-			nfs_server_upordown = NFS_SERVER_STOPPED;
-			cv_signal(&nfs_server_upordown_cv);
+			mutex_enter(&ng->nfs_server_upordown_lock);
+			ng->nfs_server_upordown = NFS_SERVER_STOPPED;
+			cv_signal(&ng->nfs_server_upordown_cv);
 		}
 	}
-	mutex_exit(&nfs_server_upordown_lock);
+	mutex_exit(&ng->nfs_server_upordown_lock);
 }
 
 static int
@@ -411,6 +397,7 @@ nfs_srv_set_sc_versions(struct file *fp, SVC_CALLOUT_TABLE **sctpp,
 int
 nfs_svc(struct nfs_svc_args *arg, model_t model)
 {
+	struct nfs_globals *ng;
 	file_t *fp;
 	SVCMASTERXPRT *xprt;
 	int error;
@@ -425,6 +412,7 @@ nfs_svc(struct nfs_svc_args *arg, model_t model)
 	model = model;		/* STRUCT macros don't always refer to it */
 #endif
 
+	ng = zone_getspecific(nfssrv_zone_key, curzone);
 	STRUCT_SET_HANDLE(uap, model, arg);
 
 	/* Check privileges in nfssys() */
@@ -458,27 +446,27 @@ nfs_svc(struct nfs_svc_args *arg, model_t model)
 		return (error);
 	}
 
-	nfs_versmin = STRUCT_FGET(uap, versmin);
-	nfs_versmax = STRUCT_FGET(uap, versmax);
+	ng->nfs_versmin = STRUCT_FGET(uap, versmin);
+	ng->nfs_versmax = STRUCT_FGET(uap, versmax);
 
 	/* Double check the vers min/max ranges */
-	if ((nfs_versmin > nfs_versmax) ||
-	    (nfs_versmin < NFS_VERSMIN) ||
-	    (nfs_versmax > NFS_VERSMAX)) {
-		nfs_versmin = NFS_VERSMIN_DEFAULT;
-		nfs_versmax = NFS_VERSMAX_DEFAULT;
+	if ((ng->nfs_versmin > ng->nfs_versmax) ||
+	    (ng->nfs_versmin < NFS_VERSMIN) ||
+	    (ng->nfs_versmax > NFS_VERSMAX)) {
+		ng->nfs_versmin = NFS_VERSMIN_DEFAULT;
+		ng->nfs_versmax = NFS_VERSMAX_DEFAULT;
 	}
 
 	if (error =
-	    nfs_srv_set_sc_versions(fp, &sctp, nfs_versmin, nfs_versmax)) {
+	    nfs_srv_set_sc_versions(fp, &sctp, ng->nfs_versmin, ng->nfs_versmax)) {
 		releasef(STRUCT_FGET(uap, fd));
 		kmem_free(addrmask.buf, addrmask.maxlen);
 		return (error);
 	}
 
 	/* Initialize nfsv4 server */
-	if (nfs_versmax == (rpcvers_t)NFS_V4)
-		rfs4_server_start(STRUCT_FGET(uap, delegation));
+	if (ng->nfs_versmax == (rpcvers_t)NFS_V4)
+		rfs4_server_start(ng, STRUCT_FGET(uap, delegation));
 
 	/* Create a transport handle. */
 	error = svc_tli_kcreate(fp, readsize, buf, &addrmask, &xprt,
@@ -497,29 +485,29 @@ nfs_svc(struct nfs_svc_args *arg, model_t model)
 }
 
 static void
-rfs4_server_start(int nfs4_srv_delegation)
+rfs4_server_start(struct nfs_globals *ng, int nfs4_srv_delegation)
 {
 	/*
 	 * Determine if the server has previously been "started" and
 	 * if not, do the per instance initialization
 	 */
-	mutex_enter(&nfs_server_upordown_lock);
+	mutex_enter(&ng->nfs_server_upordown_lock);
 
-	if (nfs_server_upordown != NFS_SERVER_RUNNING) {
+	if (ng->nfs_server_upordown != NFS_SERVER_RUNNING) {
 		/* Do we need to stop and wait on the previous server? */
-		while (nfs_server_upordown == NFS_SERVER_STOPPING ||
-		    nfs_server_upordown == NFS_SERVER_OFFLINE)
-			cv_wait(&nfs_server_upordown_cv,
-			    &nfs_server_upordown_lock);
+		while (ng->nfs_server_upordown == NFS_SERVER_STOPPING ||
+		    ng->nfs_server_upordown == NFS_SERVER_OFFLINE)
+			cv_wait(&ng->nfs_server_upordown_cv,
+			    &ng->nfs_server_upordown_lock);
 
-		if (nfs_server_upordown != NFS_SERVER_RUNNING) {
+		if (ng->nfs_server_upordown != NFS_SERVER_RUNNING) {
 			(void) svc_pool_control(NFS_SVCPOOL_ID,
 			    SVCPSET_UNREGISTER_PROC, (void *)&nfs_srv_offline);
 			(void) svc_pool_control(NFS_SVCPOOL_ID,
 			    SVCPSET_SHUTDOWN_PROC, (void *)&nfs_srv_stop_all);
 
 			/* is this an nfsd warm start? */
-			if (nfs_server_upordown == NFS_SERVER_QUIESCED) {
+			if (ng->nfs_server_upordown == NFS_SERVER_QUIESCED) {
 				cmn_err(CE_NOTE, "nfs_server: "
 				    "server was previously quiesced; "
 				    "existing NFSv4 state will be re-used");
@@ -545,11 +533,11 @@ rfs4_server_start(int nfs4_srv_delegation)
 			if (nfs4_srv_delegation != FALSE)
 				rfs4_set_deleg_policy(SRV_NORMAL_DELEGATE);
 
-			nfs_server_upordown = NFS_SERVER_RUNNING;
+			ng->nfs_server_upordown = NFS_SERVER_RUNNING;
 		}
-		cv_signal(&nfs_server_upordown_cv);
+		cv_signal(&ng->nfs_server_upordown_cv);
 	}
-	mutex_exit(&nfs_server_upordown_lock);
+	mutex_exit(&ng->nfs_server_upordown_lock);
 }
 
 /*
@@ -559,6 +547,7 @@ rfs4_server_start(int nfs4_srv_delegation)
 int
 rdma_start(struct rdma_svc_args *rsa)
 {
+	struct nfs_globals *ng;
 	int error;
 	rdma_xprt_group_t started_rdma_xprts;
 	rdma_stat stat;
@@ -571,8 +560,10 @@ rdma_start(struct rdma_svc_args *rsa)
 		rsa->nfs_versmin = NFS_VERSMIN_DEFAULT;
 		rsa->nfs_versmax = NFS_VERSMAX_DEFAULT;
 	}
-	nfs_versmin = rsa->nfs_versmin;
-	nfs_versmax = rsa->nfs_versmax;
+
+	ng = zone_getspecific(nfssrv_zone_key, curzone);
+	ng->nfs_versmin = rsa->nfs_versmin;
+	ng->nfs_versmax = rsa->nfs_versmax;
 
 	/* Set the versions in the callout table */
 	__nfs_sc_rdma[0].sc_versmin = rsa->nfs_versmin;
@@ -586,7 +577,7 @@ rdma_start(struct rdma_svc_args *rsa)
 
 	/* Initialize nfsv4 server */
 	if (rsa->nfs_versmax == (rpcvers_t)NFS_V4)
-		rfs4_server_start(rsa->delegation);
+		rfs4_server_start(ng, rsa->delegation);
 
 	started_rdma_xprts.rtg_count = 0;
 	started_rdma_xprts.rtg_listhead = NULL;
@@ -603,7 +594,7 @@ restart:
 		/*
 		 * wait till either interrupted by a signal on
 		 * nfs service stop/restart or signalled by a
-		 * rdma plugin attach/detatch.
+		 * rdma attach/detatch.
 		 */
 
 		stat = rdma_kwait();
@@ -2532,12 +2523,11 @@ nfs_srvinit(void)
 	rfs3_srvrinit();
 	nfsauth_init();
 
-	/* Init the stuff to control start/stop */
-	nfs_server_upordown = NFS_SERVER_STOPPED;
-	mutex_init(&nfs_server_upordown_lock, NULL, MUTEX_DEFAULT, NULL);
-	cv_init(&nfs_server_upordown_cv, NULL, CV_DEFAULT, NULL);
-	mutex_init(&rdma_wait_mutex, NULL, MUTEX_DEFAULT, NULL);
-	cv_init(&rdma_wait_cv, NULL, CV_DEFAULT, NULL);
+	/*
+	 * Zone for NFS server global veriables
+	 */
+	zone_key_create(&nfssrv_zone_key, nfs_srv_zone_init,
+	    NULL, nfs_srv_zone_fini);
 
 	return (0);
 }
@@ -2554,11 +2544,40 @@ nfs_srvfini(void)
 	rfs3_srvrfini();
 	rfs_srvrfini();
 	nfs_exportfini();
+}
 
-	mutex_destroy(&nfs_server_upordown_lock);
-	cv_destroy(&nfs_server_upordown_cv);
-	mutex_destroy(&rdma_wait_mutex);
-	cv_destroy(&rdma_wait_cv);
+static void *
+nfs_srv_zone_init(zoneid_t zoneid)
+{
+	struct nfs_globals *ng;
+
+	ng = kmem_zalloc(sizeof (*ng), KM_SLEEP);
+
+	ng->nfs_versmin = NFS_VERSMIN_DEFAULT;
+	ng->nfs_versmax = NFS_VERSMAX_DEFAULT;
+
+	/* Init the stuff to control start/stop */
+	ng->nfs_server_upordown = NFS_SERVER_STOPPED;
+	mutex_init(&ng->nfs_server_upordown_lock, NULL, MUTEX_DEFAULT, NULL);
+	cv_init(&ng->nfs_server_upordown_cv, NULL, CV_DEFAULT, NULL);
+	mutex_init(&ng->rdma_wait_mutex, NULL, MUTEX_DEFAULT, NULL);
+	cv_init(&ng->rdma_wait_cv, NULL, CV_DEFAULT, NULL);
+
+	return (ng);
+}
+
+static void
+nfs_srv_zone_fini(zoneid_t zoneid, void *data)
+{
+	struct nfs_globals *ng;
+
+	ng = (struct nfs_globals *)data;
+	mutex_destroy(&ng->nfs_server_upordown_lock);
+	cv_destroy(&ng->nfs_server_upordown_cv);
+	mutex_destroy(&ng->rdma_wait_mutex);
+	cv_destroy(&ng->rdma_wait_cv);
+
+	kmem_free(ng, sizeof (*ng));
 }
 
 /*

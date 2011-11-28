@@ -69,8 +69,38 @@ extern "C" {
 #define	NFS_VERSMIN_DEFAULT	((rpcvers_t)2)
 #define	NFS_VERSMAX_DEFAULT	((rpcvers_t)4)
 
-extern rpcvers_t nfs_versmin;
-extern rpcvers_t nfs_versmax;
+/*
+ * Used to track the state of the server so that initialization
+ * can be done properly.
+ */
+typedef enum {
+	NFS_SERVER_STOPPED,	/* server state destroyed */
+	NFS_SERVER_STOPPING,	/* server state being destroyed */
+	NFS_SERVER_RUNNING,
+	NFS_SERVER_QUIESCED,	/* server state preserved */
+	NFS_SERVER_OFFLINE	/* server pool offline */
+} nfs_server_running_t;
+
+/*
+ * Zone globals variables of NFS server
+ */
+struct nfs_globals {
+	rpcvers_t		nfs_versmin;
+	rpcvers_t		nfs_versmax;
+
+	/*
+	 * NFS server locks and state
+	 */
+	nfs_server_running_t	nfs_server_upordown;
+	kmutex_t		nfs_server_upordown_lock;
+	kcondvar_t		nfs_server_upordown_cv;
+
+	/*
+	 * RDMA wait variables
+	 */
+	kcondvar_t		rdma_wait_cv;
+	kmutex_t		rdma_wait_mutex;
+};
 
 /*
  * Default delegation setting for the server ==> "on"
@@ -955,7 +985,7 @@ extern nvlist_t	*rfs4_dss_paths, *rfs4_dss_oldpaths;
 
 
 extern kstat_named_t	*global_svstat_ptr[];
-
+extern zone_key_t	nfssrv_zone_key;
 extern krwlock_t	rroklock;
 extern vtype_t		nf_to_vt[];
 extern kstat_named_t	*rfsproccnt_v2_ptr;
