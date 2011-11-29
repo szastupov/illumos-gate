@@ -169,45 +169,13 @@ nfsauth_init(void)
 void
 nfsauth_fini(void)
 {
-	/*
-	 * Deallocate nfsauth cache handle
-	 */
-	kmem_cache_destroy(exi_cache_handle);
-}
-
-static void *
-nfsauth_zone_init(zoneid_t zoneid)
-{
-	nfsauth_globals_t *nag;
-
-	nag = kmem_zalloc(sizeof (*nag), KM_SLEEP);
-
-	/*
-	 * mountd can be restarted by smf(5). We need to make sure
-	 * the updated door handle will safely make it to mountd_dh
-	 */
-	mutex_init(&nag->mountd_lock, NULL, MUTEX_DEFAULT, NULL);
-	mutex_init(&nag->refreshq_lock, NULL, MUTEX_DEFAULT, NULL);
-	list_create(&nag->refreshq_queue, sizeof (refreshq_exi_node_t),
-	    offsetof(refreshq_exi_node_t, ren_node));
-
-	nag->refreshq_dead_entries = NULL;
-	cv_init(&nag->refreshq_cv, NULL, CV_DEFAULT, NULL);
-	nag->refreshq_thread_state = REFRESHQ_THREAD_HALTED;
-
-	return (nag);
-}
-
-static void
-nfsauth_zone_fini(zoneid_t zoneid, void *data)
-{
-	nfsauth_globals_t *nag;
+	nfsauth_globals_t	*nag;
 	refreshq_exi_node_t	*ren;
 	refreshq_auth_node_t	*ran;
 	struct auth_cache	*p;
 	struct auth_cache	*auth_next;
 
-	nag = (nfsauth_globals_t *)data;
+	nag = zone_getspecific(nfsauth_zone_key, curzone);
 
 	/*
 	 * Prevent the refreshq_thread from getting new
@@ -251,6 +219,42 @@ nfsauth_zone_fini(zoneid_t zoneid, void *data)
 	}
 
 	mutex_exit(&nag->refreshq_lock);
+
+	/*
+	 * Deallocate nfsauth cache handle
+	 */
+	kmem_cache_destroy(exi_cache_handle);
+}
+
+static void *
+nfsauth_zone_init(zoneid_t zoneid)
+{
+	nfsauth_globals_t *nag;
+
+	nag = kmem_zalloc(sizeof (*nag), KM_SLEEP);
+
+	/*
+	 * mountd can be restarted by smf(5). We need to make sure
+	 * the updated door handle will safely make it to mountd_dh
+	 */
+	mutex_init(&nag->mountd_lock, NULL, MUTEX_DEFAULT, NULL);
+	mutex_init(&nag->refreshq_lock, NULL, MUTEX_DEFAULT, NULL);
+	list_create(&nag->refreshq_queue, sizeof (refreshq_exi_node_t),
+	    offsetof(refreshq_exi_node_t, ren_node));
+
+	nag->refreshq_dead_entries = NULL;
+	cv_init(&nag->refreshq_cv, NULL, CV_DEFAULT, NULL);
+	nag->refreshq_thread_state = REFRESHQ_THREAD_HALTED;
+
+	return (nag);
+}
+
+static void
+nfsauth_zone_fini(zoneid_t zoneid, void *data)
+{
+	nfsauth_globals_t *nag;
+
+	nag = (nfsauth_globals_t *)data;
 
 	list_destroy(&nag->refreshq_queue);
 	cv_destroy(&nag->refreshq_cv);
