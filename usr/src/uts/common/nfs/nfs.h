@@ -2310,7 +2310,6 @@ extern int	rfs_publicfh_mclookup(char *, vnode_t *, cred_t *,
 			vnode_t **, struct exportinfo **, struct sec_ol *);
 extern int	rfs_pathname(char *, vnode_t **, vnode_t **,
 			vnode_t *, cred_t *, int);
-extern zone_key_t	rfs3_zone_key;
 extern vtype_t		nf3_to_vt[];
 extern kstat_named_t	*rfsproccnt_v3_ptr;
 extern vfsops_t		*nfs3_vfsops;
