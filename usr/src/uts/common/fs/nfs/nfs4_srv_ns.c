@@ -145,8 +145,9 @@ pseudo_exportfs(vnode_t *vp, fid_t *fid, struct exp_visible *vis_head,
 	struct exportdata *kex;
 	fsid_t fsid;
 	int vpathlen;
+	nfs_export_t *ne = nfs_get_export();
 
-	ASSERT(RW_WRITE_HELD(&exported_lock));
+	ASSERT(RW_WRITE_HELD(&ne->exported_lock));
 
 	fsid = vp->v_vfsp->vfs_fsid;
 	exi = kmem_zalloc(sizeof (*exi), KM_SLEEP);
@@ -193,7 +194,7 @@ pseudo_exportfs(vnode_t *vp, fid_t *fid, struct exp_visible *vis_head,
 	/*
 	 * Insert the new entry at the front of the export list
 	 */
-	export_link(exi);
+	export_link(ne, exi);
 
 	return (exi);
 }
@@ -269,14 +270,14 @@ tree_prepend_node(treenode_t *n, exp_visible_t *v, exportinfo_t *e)
  * they should be already freed.
  */
 static void
-tree_remove_node(treenode_t *node)
+tree_remove_node(nfs_export_t *ne, treenode_t *node)
 {
 	treenode_t *parent = node->tree_parent;
 	treenode_t *s; /* s for sibling */
 
 	if (parent == NULL) {
 		kmem_free(node, sizeof (*node));
-		ns_root = NULL;
+		ne->ns_root = NULL;
 		return;
 	}
 	/* This node is first child */
@@ -606,8 +607,9 @@ treeclimb_export(struct exportinfo *exip)
 	struct exp_visible *vis_head = NULL;
 	struct vattr va;
 	treenode_t *tree_head = NULL;
+	nfs_export_t *ne = nfs_get_export();
 
-	ASSERT(RW_WRITE_HELD(&exported_lock));
+	ASSERT(RW_WRITE_HELD(&ne->exported_lock));
 
 	vp = exip->exi_vp;
 	VN_HOLD(vp);
@@ -669,7 +671,7 @@ treeclimb_export(struct exportinfo *exip)
 				 * (exip). Otherwise, new_exi is exportinfo
 				 * created in pseudo_exportfs() above.
 				 */
-				ns_root = tree_prepend_node(tree_head, 0,
+				ne->ns_root = tree_prepend_node(tree_head, 0,
 				    new_exi);
 				break;
 			}
@@ -760,7 +762,7 @@ treeclimb_export(struct exportinfo *exip)
 			exportinfo_t *e  = tree_head->tree_exi;
 			/* exip will be freed in exportfs() */
 			if (e && e != exip) {
-				export_unlink(e);
+				export_unlink(ne, e);
 				exi_rele(e);
 			}
 			tree_head = tree_head->tree_child_first;
@@ -787,8 +789,9 @@ void
 treeclimb_unexport(struct exportinfo *exip)
 {
 	treenode_t *tnode, *old_nd;
+	nfs_export_t *ne = nfs_get_export();
 
-	ASSERT(RW_WRITE_HELD(&exported_lock));
+	ASSERT(RW_WRITE_HELD(&ne->exported_lock));
 
 	tnode = exip->exi_tree;
 	/*
@@ -810,7 +813,7 @@ treeclimb_unexport(struct exportinfo *exip)
 		/* Release pseudo export if it has no child */
 		if (TREE_ROOT(tnode) && !TREE_EXPORTED(tnode) &&
 		    tnode->tree_child_first == 0) {
-			export_unlink(tnode->tree_exi);
+			export_unlink(ne, tnode->tree_exi);
 			exi_rele(tnode->tree_exi);
 		}
 
@@ -824,7 +827,7 @@ treeclimb_unexport(struct exportinfo *exip)
 
 		/* Remove itself, if this is a leaf and non-exported node */
 		if (old_nd->tree_child_first == NULL && !TREE_EXPORTED(old_nd))
-			tree_remove_node(old_nd);
+			tree_remove_node(ne, old_nd);
 	}
 }
 

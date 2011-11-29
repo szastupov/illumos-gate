@@ -43,8 +43,6 @@
 #define	NUM_RECORDS_TO_WRITE 256
 #define	NUM_BYTES_TO_WRITE 65536
 
-extern krwlock_t exported_lock;
-
 static int nfslog_num_records_to_write = NUM_RECORDS_TO_WRITE;
 static int nfslog_num_bytes_to_write = NUM_BYTES_TO_WRITE;
 
@@ -1529,6 +1527,7 @@ static int	nfslog_dispatch_table_arglen = sizeof (nfslog_dispatch_table) /
  */
 struct exportinfo *
 nfslog_get_exi(
+	nfs_export_t *ne,
 	struct exportinfo *exi,
 	struct svc_req *req,
 	caddr_t res,
@@ -1560,7 +1559,7 @@ nfslog_get_exi(
 		return (exi);
 	}
 
-	if (exi != exi_public)
+	if (exi != ne->exi_public)
 		return (NULL);
 
 	/*
@@ -1764,17 +1763,17 @@ nfslog_write_record(struct exportinfo *exi, struct svc_req *req,
 static char *
 get_publicfh_path(int *alloc_length)
 {
-	extern struct exportinfo *exi_public;
 	char *pubpath;
+	nfs_export_t *ne = nfs_get_export();
 
-	rw_enter(&exported_lock, RW_READER);
+	rw_enter(&ne->exported_lock, RW_READER);
 
-	*alloc_length = exi_public->exi_export.ex_pathlen + 1;
+	*alloc_length = ne->exi_public->exi_export.ex_pathlen + 1;
 	pubpath = kmem_alloc(*alloc_length, KM_SLEEP);
 
-	(void) strcpy(pubpath, exi_public->exi_export.ex_path);
+	(void) strcpy(pubpath, ne->exi_public->exi_export.ex_path);
 
-	rw_exit(&exported_lock);
+	rw_exit(&ne->exported_lock);
 
 	return (pubpath);
 }

@@ -876,6 +876,7 @@ do_rfs4_op_secinfo(struct compound_state *cs, char *nm, SECINFO4res *resp)
 	seconfig_t *si;
 	bool_t did_traverse = FALSE;
 	int dotdot, walk;
+	nfs_export_t *ne = nfs_get_export();
 
 	dvp = cs->vp;
 	dotdot = (nm[0] == '.' && nm[1] == '.' && nm[2] == '\0');
@@ -1016,7 +1017,7 @@ do_rfs4_op_secinfo(struct compound_state *cs, char *nm, SECINFO4res *resp)
 	 * For a real export node, return the flavor that the client
 	 * has access with.
 	 */
-	ASSERT(RW_LOCK_HELD(&exported_lock));
+	ASSERT(RW_LOCK_HELD(&ne->exported_lock));
 	if (PSEUDO(exi)) {
 		count = exi->exi_export.ex_seccnt; /* total sec count */
 		resok_val = kmem_alloc(count * sizeof (secinfo4), KM_SLEEP);
@@ -3415,6 +3416,7 @@ rfs4_op_putpubfh(nfs_argop4 *args, nfs_resop4 *resop, struct svc_req *req,
 	vnode_t		*vp;
 	struct exportinfo *exi, *sav_exi;
 	nfs_fh4_fmt_t	*fh_fmtp;
+	nfs_export_t *ne = nfs_get_export();
 
 	DTRACE_NFSV4_1(op__putpubfh__start, struct compound_state *, cs);
 
@@ -3428,19 +3430,19 @@ rfs4_op_putpubfh(nfs_argop4 *args, nfs_resop4 *resop, struct svc_req *req,
 
 	cs->cr = crdup(cs->basecr);
 
-	vp = exi_public->exi_vp;
+	vp = ne->exi_public->exi_vp;
 	if (vp == NULL) {
 		*cs->statusp = resp->status = NFS4ERR_SERVERFAULT;
 		goto out;
 	}
 
-	error = makefh4(&cs->fh, vp, exi_public);
+	error = makefh4(&cs->fh, vp, ne->exi_public);
 	if (error != 0) {
 		*cs->statusp = resp->status = puterrno4(error);
 		goto out;
 	}
 	sav_exi = cs->exi;
-	if (exi_public == exi_root) {
+	if (ne->exi_public == ne->exi_root) {
 		/*
 		 * No filesystem is actually shared public, so we default
 		 * to exi_root. In this case, we must check whether root
@@ -3455,12 +3457,12 @@ rfs4_op_putpubfh(nfs_argop4 *args, nfs_resop4 *resop, struct svc_req *req,
 		 */
 		exi = checkexport4(&fh_fmtp->fh4_fsid,
 		    (fid_t *)&fh_fmtp->fh4_xlen, NULL);
-		cs->exi = ((exi != NULL) ? exi : exi_public);
+		cs->exi = ((exi != NULL) ? exi : ne->exi_public);
 	} else {
 		/*
 		 * it's a properly shared filesystem
 		 */
-		cs->exi = exi_public;
+		cs->exi = ne->exi_public;
 	}
 
 	if (is_system_labeled()) {
@@ -5774,6 +5776,7 @@ rfs4_compound(COMPOUND4args *args, COMPOUND4res *resp, struct exportinfo *exi,
 {
 	uint_t i;
 	struct compound_state cs;
+	nfs_export_t *ne;
 
 	if (rv != NULL)
 		*rv = 0;
@@ -5810,6 +5813,8 @@ rfs4_compound(COMPOUND4args *args, COMPOUND4res *resp, struct exportinfo *exi,
 	cr = crget();
 	ASSERT(cr != NULL);
 
+	ne = nfs_get_export();
+
 	if (sec_svc_getcred(req, cr, &cs.principal, &cs.nfsflavor) == 0) {
 		DTRACE_NFSV4_2(compound__start, struct compound_state *,
 		    &cs, COMPOUND4args *, args);
@@ -5840,7 +5845,7 @@ rfs4_compound(COMPOUND4args *args, COMPOUND4res *resp, struct exportinfo *exi,
 	 * ops along with unexport.  This lock will be removed as
 	 * part of the NFSv4 phase 2 namespace redesign work.
 	 */
-	rw_enter(&exported_lock, RW_READER);
+	rw_enter(&ne->exported_lock, RW_READER);
 
 	/*
 	 * If this is the first compound we've seen, we need to start all
@@ -5911,7 +5916,7 @@ rfs4_compound(COMPOUND4args *args, COMPOUND4res *resp, struct exportinfo *exi,
 		}
 	}
 
-	rw_exit(&exported_lock);
+	rw_exit(&ne->exported_lock);
 
 	DTRACE_NFSV4_2(compound__done, struct compound_state *, &cs,
 	    COMPOUND4res *, resp);

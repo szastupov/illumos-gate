@@ -654,7 +654,7 @@ extern void	nfslog_dprint(const int, const char *fmt, ...)
 extern void	*nfslog_record_alloc(struct exportinfo *, int,
 		void **, int);
 extern void	nfslog_record_free(void *, void *, size_t);
-extern struct	exportinfo *nfslog_get_exi(struct exportinfo *,
+extern struct	exportinfo *nfslog_get_exi(nfs_export_t *, struct exportinfo *,
 		struct svc_req *, caddr_t, unsigned int *);
 extern void	nfslog_write_record(struct exportinfo *, struct svc_req *,
 		caddr_t, caddr_t, cred_t *, struct netbuf *, unsigned int,

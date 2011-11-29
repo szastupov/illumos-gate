@@ -174,7 +174,7 @@ _info(struct modinfo *modinfop)
 #define	PUBLICFH_CHECK(disp, exi, fsid, xfid) \
 		((disp->dis_flags & RPC_PUBLICFH_OK) && \
 		((exi->exi_export.ex_flags & EX_PUBLIC) || \
-		(exi == exi_public && exportmatch(exi_root, \
+		(exi == ne->exi_public && exportmatch(ne->exi_root, \
 		fsid, xfid))))
 
 static void	nfs_srv_shutdown_all(int);
@@ -1489,6 +1489,7 @@ common_dispatch(struct svc_req *req, SVCXPRT *xprt, rpcvers_t min_vers,
 	struct exportinfo *nfslog_exi = NULL;
 	char **procnames;
 	char cbuf[INET6_ADDRSTRLEN];	/* to hold both IPv4 and IPv6 addr */
+	nfs_export_t *ne;
 
 	vers = req->rq_vers;
 
@@ -1547,6 +1548,8 @@ common_dispatch(struct svc_req *req, SVCXPRT *xprt, rpcvers_t min_vers,
 			goto done;
 		}
 	}
+
+	ne = nfs_get_export();
 
 	/*
 	 * If Version 4 use that specific dispatch function.
@@ -1743,7 +1746,7 @@ common_dispatch(struct svc_req *req, SVCXPRT *xprt, rpcvers_t min_vers,
 	 * file system.
 	 */
 	if (nfslog_buffer_list != NULL) {
-		nfslog_exi = nfslog_get_exi(exi, req, res, &nfslog_rec_id);
+		nfslog_exi = nfslog_get_exi(ne, exi, req, res, &nfslog_rec_id);
 		/*
 		 * Is logging enabled?
 		 */

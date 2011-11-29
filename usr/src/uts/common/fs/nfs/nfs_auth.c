@@ -1141,17 +1141,20 @@ exi_cache_reclaim(void *cdrarg)
 {
 	int i;
 	struct exportinfo *exi;
+	nfs_export_t *ne;
 
-	rw_enter(&exported_lock, RW_READER);
+	ne = nfs_get_export();
+
+	rw_enter(&ne->exported_lock, RW_READER);
 
 	for (i = 0; i < EXPTABLESIZE; i++) {
-		for (exi = exptable[i]; exi; exi = exi->fid_hash.next) {
+		for (exi = ne->exptable[i]; exi; exi = exi->fid_hash.next) {
 			exi_cache_trim(exi);
 		}
 	}
 	nfsauth_cache_reclaim++;
 
-	rw_exit(&exported_lock);
+	rw_exit(&ne->exported_lock);
 }
 
 void

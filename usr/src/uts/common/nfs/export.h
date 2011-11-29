@@ -33,6 +33,7 @@
 #include <sys/vnode.h>
 #include <nfs/nfs4.h>
 #include <sys/kiconv.h>
+#include <sys/pkp_hash.h>
 
 #ifdef	__cplusplus
 extern "C" {
@@ -416,9 +417,6 @@ typedef struct treenode {
 #define	TREE_EXPORTED(t) \
 	((t)->tree_exi && !PSEUDO((t)->tree_exi))
 
-/* Root of nfs pseudo namespace */
-extern treenode_t *ns_root;
-
 #define	EXPTABLESIZE   256
 
 struct exp_hash {
@@ -561,8 +559,6 @@ extern struct exportinfo *nfs_vptoexi(vnode_t *, vnode_t *, cred_t *, int *,
     int *, bool_t);
 extern int	nfs_check_vpexi(vnode_t *, vnode_t *, cred_t *,
 			struct exportinfo **);
-extern void	export_link(struct exportinfo *);
-extern void	export_unlink(struct exportinfo *);
 extern vnode_t *untraverse(vnode_t *);
 extern int	vn_is_nfs_reparse(vnode_t *, cred_t *);
 extern int	client_is_downrev(struct svc_req *);
@@ -590,13 +586,35 @@ extern int	nfs4_vget_pseudo(struct exportinfo *, vnode_t **, fid_t *);
 extern void	srv_secinfo_exp2pseu(struct exportdata *, struct exportdata *);
 extern void	srv_secinfo_list_free(struct secinfo *, int);
 
-/*
- * "public" and default (root) location for public filehandle
- */
-extern struct exportinfo *exi_public, *exi_root;
 extern fhandle_t nullfh2;	/* for comparing V2 filehandles */
-extern krwlock_t exported_lock;
-extern struct exportinfo *exptable[];
+
+typedef struct nfs_export {
+	/* Root of nfs pseudo namespace */
+	treenode_t *ns_root;
+
+	struct exportinfo *exptable_path_hash[PKP_HASH_SIZE];
+	struct exportinfo *exptable[EXPTABLESIZE];
+
+	/*
+	 * exported_lock	Read/Write lock that protects the exportinfo list.
+	 *			This lock must be held when searching or modifiying
+	 *			the exportinfo list.
+	 */
+	krwlock_t exported_lock;
+
+    /*
+	 * "public" and default (root) location for public filehandle
+	 */
+	struct exportinfo *exi_public, *exi_root;
+
+	fid_t exi_rootfid;	/* for checking the default public file handle */
+
+	fhandle_t nullfh2;	/* for comparing V2 filehandles */
+} nfs_export_t;
+
+extern nfs_export_t* nfs_get_export();
+extern void	export_link(nfs_export_t *, struct exportinfo *);
+extern void	export_unlink(nfs_export_t *, struct exportinfo *);
 
 /*
  * Two macros for identifying public filehandles.
