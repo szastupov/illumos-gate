@@ -104,9 +104,9 @@ static struct modlinkage modlinkage = {
 	MODREV_1, (void *)&modlmisc, NULL
 };
 
-zone_key_t nfssrv_zone_key;
 kmem_cache_t *nfs_xuio_cache;
 int nfs_loaned_buffers = 0;
+static zone_key_t nfssrv_zone_key;
 
 int
 _init(void)

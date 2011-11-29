@@ -88,8 +88,8 @@ static void	rfs3_zone_fini(zoneid_t, void *);
 
 extern int nfs_loaned_buffers;
 
-zone_key_t rfs3_zone_key;
 u_longlong_t nfs3_srv_caller_id;
+static zone_key_t rfs3_zone_key;
 
 /* ARGSUSED */
 void
@@ -4756,3 +4756,4 @@ rfs3_zone_fini(zoneid_t zoneid, void *data)
 	ns = (nfs3_srv_t *)data;
 	kmem_free(ns, sizeof (*ns));
 }
+
