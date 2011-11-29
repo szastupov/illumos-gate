@@ -62,11 +62,6 @@ static void nfsauth_zone_fini(zoneid_t, void *);
 
 extern pri_t minclsyspri;
 
-int nfsauth_cache_hit;
-int nfsauth_cache_miss;
-int nfsauth_cache_refresh;
-int nfsauth_cache_reclaim;
-
 /*
  * The lifetime of an auth cache entry:
  * ------------------------------------
@@ -796,11 +791,11 @@ nfsauth_cache_get(struct exportinfo *exi, struct svc_req *req, int flavor)
 	}
 
 	if (p != NULL) {
-		nfsauth_cache_hit++;
+		nag->nfsauth_cache_hit++;
 
 		refresh = gethrestime_sec() - p->auth_freshness;
 		DTRACE_PROBE2(nfsauth__debug__cache__hit,
-		    int, nfsauth_cache_hit,
+		    int, nag->nfsauth_cache_hit,
 		    time_t, refresh);
 
 		mutex_enter(&p->auth_lock);
@@ -813,12 +808,12 @@ nfsauth_cache_get(struct exportinfo *exi, struct svc_req *req, int flavor)
 			p->auth_netid =
 			    strdup(svc_getnetid(req->rq_xprt));
 
-			nfsauth_cache_refresh++;
+			nag->nfsauth_cache_refresh++;
 
 			DTRACE_PROBE3(nfsauth__debug__cache__stale,
 			    struct exportinfo *, exi,
 			    struct auth_cache *, p,
-			    int, nfsauth_cache_refresh);
+			    int, nag->nfsauth_cache_refresh);
 
 			ran = kmem_alloc(sizeof (refreshq_auth_node_t),
 			    KM_SLEEP);
@@ -883,7 +878,7 @@ nfsauth_cache_get(struct exportinfo *exi, struct svc_req *req, int flavor)
 
 	rw_exit(&exi->exi_cache_lock);
 
-	nfsauth_cache_miss++;
+	nag->nfsauth_cache_miss++;
 
 	if (!nfsauth_retrieve(nag, exi, svc_getnetid(req->rq_xprt), flavor,
 	    &addr, &access)) {
@@ -1133,7 +1128,9 @@ exi_cache_reclaim(void *cdrarg)
 {
 	int i;
 	struct exportinfo *exi;
+	nfsauth_globals_t *nag;
 
+	nag = zone_getspecific(nfsauth_zone_key, curzone);
 	rw_enter(&exported_lock, RW_READER);
 
 	for (i = 0; i < EXPTABLESIZE; i++) {
@@ -1141,7 +1138,7 @@ exi_cache_reclaim(void *cdrarg)
 			exi_cache_trim(exi);
 		}
 	}
-	nfsauth_cache_reclaim++;
+	nag->nfsauth_cache_reclaim++;
 
 	rw_exit(&exported_lock);
 }

@@ -215,6 +215,14 @@ typedef struct nfsauth_globals {
 	 */
 	struct auth_cache		*refreshq_dead_entries;
 	nfsauth_refreshq_thread_state_t	refreshq_thread_state;
+
+	/*
+	 * nfs auth cache statistics
+	 */
+	int nfsauth_cache_hit;
+	int nfsauth_cache_miss;
+	int nfsauth_cache_refresh;
+	int nfsauth_cache_reclaim;
 } nfsauth_globals_t;
 #endif /* _KERNEL */
 
