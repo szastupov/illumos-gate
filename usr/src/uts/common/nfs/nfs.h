@@ -985,7 +985,6 @@ extern nvlist_t	*rfs4_dss_paths, *rfs4_dss_oldpaths;
 
 
 extern kstat_named_t	*global_svstat_ptr[];
-extern zone_key_t	nfssrv_zone_key;
 extern krwlock_t	rroklock;
 extern vtype_t		nf_to_vt[];
 extern kstat_named_t	*rfsproccnt_v2_ptr;
