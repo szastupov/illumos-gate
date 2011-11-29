@@ -57,6 +57,8 @@ static clinfo_t ci;
 static struct kmem_cache *exi_cache_handle;
 static void exi_cache_reclaim(void *);
 static void exi_cache_trim(struct exportinfo *exi);
+static void *nfsauth_zone_init(zoneid_t);
+static void nfsauth_zone_fini(zoneid_t, void *);
 
 extern pri_t minclsyspri;
 
@@ -119,84 +121,33 @@ typedef struct refreshq_auth_node {
 	list_node_t		ran_node;
 } refreshq_auth_node_t;
 
-/*
- * Used to manipulate things on the refreshq_queue.
- * Note that the refresh thread will effectively
- * pop a node off of the queue, at which point it
- * will no longer need to hold the mutex.
- */
-static kmutex_t refreshq_lock;
-static list_t refreshq_queue;
-static kcondvar_t refreshq_cv;
-
-/*
- * A list_t would be overkill. These are auth_cache
- * entries which are no longer linked to an exi.
- * It should be the case that all of their states
- * are NFS_AUTH_INVALID.
- *
- * I.e., the only way to be put on this list is
- * iff their state indicated that they had been placed
- * on the refreshq_queue.
- *
- * Note that while there is no link from the exi or
- * back to the exi, the exi can not go away until
- * these entries are harvested.
- */
-static struct auth_cache	*refreshq_dead_entries;
-
-/*
- * If there is ever a problem with loading the
- * module, then nfsauth_fini() needs to be called
- * to remove state. In that event, since the
- * refreshq thread has been started, they need to
- * work together to get rid of state.
- */
-typedef enum nfsauth_refreshq_thread_state {
-	REFRESHQ_THREAD_RUNNING,
-	REFRESHQ_THREAD_FINI_REQ,
-	REFRESHQ_THREAD_HALTED
-} nfsauth_refreshq_thread_state_t;
-
-nfsauth_refreshq_thread_state_t
-refreshq_thread_state = REFRESHQ_THREAD_HALTED;
-
 static void nfsauth_free_node(struct auth_cache *);
-static void nfsauth_remove_dead_entry(struct auth_cache *);
-static void nfsauth_refresh_thread(void);
+static void nfsauth_remove_dead_entry(nfsauth_globals_t *, struct auth_cache *);
+static void nfsauth_refresh_thread(nfsauth_globals_t *);
 
 /*
  * mountd is a server-side only daemon. This will need to be
  * revisited if the NFS server is ever made zones-aware.
  */
-kmutex_t	mountd_lock;
-door_handle_t   mountd_dh;
+static zone_key_t	nfsauth_zone_key;
 
 void
 mountd_args(uint_t did)
 {
-	mutex_enter(&mountd_lock);
-	if (mountd_dh)
-		door_ki_rele(mountd_dh);
-	mountd_dh = door_ki_lookup(did);
-	mutex_exit(&mountd_lock);
+	nfsauth_globals_t *nag;
+
+	nag = zone_getspecific(nfsauth_zone_key, curzone);
+	mutex_enter(&nag->mountd_lock);
+	if (nag->mountd_dh)
+		door_ki_rele(nag->mountd_dh);
+	nag->mountd_dh = door_ki_lookup(did);
+	mutex_exit(&nag->mountd_lock);
 }
 
 void
 nfsauth_init(void)
 {
-	/*
-	 * mountd can be restarted by smf(5). We need to make sure
-	 * the updated door handle will safely make it to mountd_dh
-	 */
-	mutex_init(&mountd_lock, NULL, MUTEX_DEFAULT, NULL);
-
-	mutex_init(&refreshq_lock, NULL, MUTEX_DEFAULT, NULL);
-	list_create(&refreshq_queue, sizeof (refreshq_exi_node_t),
-	    offsetof(refreshq_exi_node_t, ren_node));
-	refreshq_dead_entries = NULL;
-
-	cv_init(&refreshq_cv, NULL, CV_DEFAULT, NULL);
+	nfsauth_globals_t *nag;
 
 	/*
 	 * Allocate nfsauth cache handle
@@ -205,9 +156,19 @@ nfsauth_init(void)
 	    sizeof (struct auth_cache), 0, NULL, NULL,
 	    exi_cache_reclaim, NULL, NULL, 0);
 
-	refreshq_thread_state = REFRESHQ_THREAD_RUNNING;
+	/*
+	 * Initialize nfsauth zone
+	 */
+	zone_key_create(&nfsauth_zone_key, nfsauth_zone_init,
+	    NULL, nfsauth_zone_fini);
+
+	/*
+	 * Launch nfsauth refresh thread
+	 */
+	nag = zone_getspecific(nfsauth_zone_key, curzone);
 	(void) zthread_create(NULL, 0, nfsauth_refresh_thread,
-	    NULL, 0, minclsyspri);
+	    nag, 0, minclsyspri);
+	nag->refreshq_thread_state = REFRESHQ_THREAD_RUNNING;
 }
 
 /*
@@ -217,25 +178,60 @@ nfsauth_init(void)
 void
 nfsauth_fini(void)
 {
+	/*
+	 * Deallocate nfsauth cache handle
+	 */
+	kmem_cache_destroy(exi_cache_handle);
+}
+
+static void *
+nfsauth_zone_init(zoneid_t zoneid)
+{
+	nfsauth_globals_t *nag;
+
+	nag = kmem_zalloc(sizeof (*nag), KM_SLEEP);
+
+	/*
+	 * mountd can be restarted by smf(5). We need to make sure
+	 * the updated door handle will safely make it to mountd_dh
+	 */
+	mutex_init(&nag->mountd_lock, NULL, MUTEX_DEFAULT, NULL);
+	mutex_init(&nag->refreshq_lock, NULL, MUTEX_DEFAULT, NULL);
+	list_create(&nag->refreshq_queue, sizeof (refreshq_exi_node_t),
+	    offsetof(refreshq_exi_node_t, ren_node));
+
+	nag->refreshq_dead_entries = NULL;
+	cv_init(&nag->refreshq_cv, NULL, CV_DEFAULT, NULL);
+	nag->refreshq_thread_state = REFRESHQ_THREAD_HALTED;
+
+	return (nag);
+}
+
+static void
+nfsauth_zone_fini(zoneid_t zoneid, void *data)
+{
+	nfsauth_globals_t *nag;
 	refreshq_exi_node_t	*ren;
 	refreshq_auth_node_t	*ran;
 	struct auth_cache	*p;
 	struct auth_cache	*auth_next;
 
+	nag = (nfsauth_globals_t *)data;
+
 	/*
 	 * Prevent the refreshq_thread from getting new
 	 * work.
 	 */
-	mutex_enter(&refreshq_lock);
-	if (refreshq_thread_state != REFRESHQ_THREAD_HALTED) {
-		refreshq_thread_state = REFRESHQ_THREAD_FINI_REQ;
-		cv_broadcast(&refreshq_cv);
+	mutex_enter(&nag->refreshq_lock);
+	if (nag->refreshq_thread_state != REFRESHQ_THREAD_HALTED) {
+		nag->refreshq_thread_state = REFRESHQ_THREAD_FINI_REQ;
+		cv_broadcast(&nag->refreshq_cv);
 
 		/*
 		 * Also, wait for nfsauth_refresh_thread() to exit.
 		 */
-		while (refreshq_thread_state != REFRESHQ_THREAD_HALTED) {
-			cv_wait(&refreshq_cv, &refreshq_lock);
+		while (nag->refreshq_thread_state != REFRESHQ_THREAD_HALTED) {
+			cv_wait(&nag->refreshq_cv, &nag->refreshq_lock);
 		}
 	}
 
@@ -243,7 +239,7 @@ nfsauth_fini(void)
 	 * Walk the exi_list and in turn, walk the
 	 * auth_lists.
 	 */
-	while ((ren = list_remove_head(&refreshq_queue))) {
+	while ((ren = list_remove_head(&nag->refreshq_queue))) {
 		while ((ran = list_remove_head(&ren->ren_authlist))) {
 			kmem_free(ran, sizeof (refreshq_auth_node_t));
 		}
@@ -258,24 +254,17 @@ nfsauth_fini(void)
 	 * need to see if there are any dead entries
 	 * to harvest.
 	 */
-	for (p = refreshq_dead_entries; p != NULL; p = auth_next) {
+	for (p = nag->refreshq_dead_entries; p != NULL; p = auth_next) {
 		auth_next = p->auth_next;
 		nfsauth_free_node(p);
 	}
 
-	mutex_exit(&refreshq_lock);
+	mutex_exit(&nag->refreshq_lock);
 
-	list_destroy(&refreshq_queue);
-
-	cv_destroy(&refreshq_cv);
-	mutex_destroy(&refreshq_lock);
-
-	mutex_destroy(&mountd_lock);
-
-	/*
-	 * Deallocate nfsauth cache handle
-	 */
-	kmem_cache_destroy(exi_cache_handle);
+	list_destroy(&nag->refreshq_queue);
+	cv_destroy(&nag->refreshq_cv);
+	mutex_destroy(&nag->refreshq_lock);
+	mutex_destroy(&nag->mountd_lock);
 }
 
 /*
@@ -366,8 +355,8 @@ sys_log(const char *msg)
  * Callup to the mountd to get access information in the kernel.
  */
 static bool_t
-nfsauth_retrieve(struct exportinfo *exi, char *req_netid, int flavor,
-    struct netbuf *addr, int *access)
+nfsauth_retrieve(nfsauth_globals_t *nag, struct exportinfo *exi,
+    char *req_netid, int flavor, struct netbuf *addr, int *access)
 {
 	varg_t			  varg = {0};
 	nfsauth_res_t		  res = {0};
@@ -390,11 +379,11 @@ nfsauth_retrieve(struct exportinfo *exi, char *req_netid, int flavor,
 	 * mount daemon.
 	 */
 retry:
-	mutex_enter(&mountd_lock);
-	dh = mountd_dh;
+	mutex_enter(&nag->mountd_lock);
+	dh = nag->mountd_dh;
 	if (dh)
 		door_ki_hold(dh);
-	mutex_exit(&mountd_lock);
+	mutex_exit(&nag->mountd_lock);
 
 	if (dh == NULL) {
 		/*
@@ -524,10 +513,10 @@ retry:
 					 * chance to restart mountd(1m)
 					 * and establish a new door handle.
 					 */
-					mutex_enter(&mountd_lock);
-					if (dh == mountd_dh)
-						mountd_dh = NULL;
-					mutex_exit(&mountd_lock);
+					mutex_enter(&nag->mountd_lock);
+					if (dh == nag->mountd_dh)
+						nag->mountd_dh = NULL;
+					mutex_exit(&nag->mountd_lock);
 					door_ki_rele(dh);
 					kmem_free(abuf, absz);
 					delay(hz);
@@ -605,7 +594,7 @@ fail:
 }
 
 static void
-nfsauth_refresh_thread(void)
+nfsauth_refresh_thread(nfsauth_globals_t *nag)
 {
 	refreshq_exi_node_t	*ren;
 	refreshq_auth_node_t	*ran;
@@ -618,25 +607,25 @@ nfsauth_refresh_thread(void)
 
 	callb_cpr_t		cprinfo;
 
-	CALLB_CPR_INIT(&cprinfo, &refreshq_lock, callb_generic_cpr,
+	CALLB_CPR_INIT(&cprinfo, &nag->refreshq_lock, callb_generic_cpr,
 	    "nfsauth_refresh");
 
 	for (;;) {
-		mutex_enter(&refreshq_lock);
-		if (refreshq_thread_state != REFRESHQ_THREAD_RUNNING) {
+		mutex_enter(&nag->refreshq_lock);
+		if (nag->refreshq_thread_state != REFRESHQ_THREAD_RUNNING) {
 			/* Keep the hold on the lock! */
 			break;
 		}
 
-		ren = list_remove_head(&refreshq_queue);
+		ren = list_remove_head(&nag->refreshq_queue);
 		if (ren == NULL) {
 			CALLB_CPR_SAFE_BEGIN(&cprinfo);
-			cv_wait(&refreshq_cv, &refreshq_lock);
-			CALLB_CPR_SAFE_END(&cprinfo, &refreshq_lock);
-			mutex_exit(&refreshq_lock);
+			cv_wait(&nag->refreshq_cv, &nag->refreshq_lock);
+			CALLB_CPR_SAFE_END(&cprinfo, &nag->refreshq_lock);
+			mutex_exit(&nag->refreshq_lock);
 			continue;
 		}
-		mutex_exit(&refreshq_lock);
+		mutex_exit(&nag->refreshq_lock);
 
 		exi = ren->ren_exi;
 		ASSERT(exi != NULL);
@@ -650,7 +639,7 @@ nfsauth_refresh_thread(void)
 			 * So just throw them away until we are done
 			 * with this exi node...
 			 */
-			if (refreshq_thread_state !=
+			if (nag->refreshq_thread_state !=
 			    REFRESHQ_THREAD_RUNNING) {
 				kmem_free(ran, sizeof (refreshq_auth_node_t));
 				continue;
@@ -675,7 +664,7 @@ nfsauth_refresh_thread(void)
 				 */
 				if (p->auth_state == NFS_AUTH_INVALID) {
 					mutex_exit(&p->auth_lock);
-					nfsauth_remove_dead_entry(p);
+					nfsauth_remove_dead_entry(nag, p);
 				} else
 					mutex_exit(&p->auth_lock);
 
@@ -702,7 +691,7 @@ nfsauth_refresh_thread(void)
 			 */
 			ASSERT(p->auth_netid != NULL);
 
-			retrieval = nfsauth_retrieve(exi, p->auth_netid,
+			retrieval = nfsauth_retrieve(nag, exi, p->auth_netid,
 			    p->auth_flavor, &p->auth_addr, &access);
 
 			/*
@@ -722,7 +711,7 @@ nfsauth_refresh_thread(void)
 				mutex_enter(&p->auth_lock);
 				if (p->auth_state == NFS_AUTH_INVALID) {
 					mutex_exit(&p->auth_lock);
-					nfsauth_remove_dead_entry(p);
+					nfsauth_remove_dead_entry(nag, p);
 				} else {
 					p->auth_state = NFS_AUTH_FRESH;
 					mutex_exit(&p->auth_lock);
@@ -735,7 +724,7 @@ nfsauth_refresh_thread(void)
 			mutex_enter(&p->auth_lock);
 			if (p->auth_state == NFS_AUTH_INVALID) {
 				mutex_exit(&p->auth_lock);
-				nfsauth_remove_dead_entry(p);
+				nfsauth_remove_dead_entry(nag, p);
 			} else {
 				p->auth_access = access;
 				p->auth_freshness = gethrestime_sec();
@@ -753,8 +742,8 @@ nfsauth_refresh_thread(void)
 		kmem_free(ren, sizeof (refreshq_exi_node_t));
 	}
 
-	refreshq_thread_state = REFRESHQ_THREAD_HALTED;
-	cv_broadcast(&refreshq_cv);
+	nag->refreshq_thread_state = REFRESHQ_THREAD_HALTED;
+	cv_broadcast(&nag->refreshq_cv);
 	CALLB_CPR_EXIT(&cprinfo);
 	zthread_exit();
 }
@@ -766,6 +755,7 @@ nfsauth_refresh_thread(void)
 int
 nfsauth_cache_get(struct exportinfo *exi, struct svc_req *req, int flavor)
 {
+	nfsauth_globals_t	*nag;
 	struct netbuf		*taddrmask;
 	struct netbuf		addr;
 	struct netbuf		*claddr;
@@ -776,6 +766,8 @@ nfsauth_cache_get(struct exportinfo *exi, struct svc_req *req, int flavor)
 
 	refreshq_exi_node_t	*ren;
 	refreshq_auth_node_t	*ran;
+
+	nag = zone_getspecific(nfsauth_zone_key, curzone);
 
 	/*
 	 * Now check whether this client already
@@ -832,19 +824,19 @@ nfsauth_cache_get(struct exportinfo *exi, struct svc_req *req, int flavor)
 			    KM_SLEEP);
 			ran->ran_auth = p;
 
-			mutex_enter(&refreshq_lock);
+			mutex_enter(&nag->refreshq_lock);
 			/*
 			 * We should not add a work queue
 			 * item if the thread is not
 			 * accepting them.
 			 */
-			if (refreshq_thread_state == REFRESHQ_THREAD_RUNNING) {
+			if (nag->refreshq_thread_state == REFRESHQ_THREAD_RUNNING) {
 				/*
 				 * Is there an existing exi_list?
 				 */
-				for (ren = list_head(&refreshq_queue);
+				for (ren = list_head(&nag->refreshq_queue);
 				    ren != NULL;
-				    ren = list_next(&refreshq_queue, ren)) {
+				    ren = list_next(&nag->refreshq_queue, ren)) {
 					if (ren->ren_exi == exi) {
 						list_insert_tail(
 						    &ren->ren_authlist, ran);
@@ -867,15 +859,15 @@ nfsauth_cache_get(struct exportinfo *exi, struct svc_req *req, int flavor)
 
 					list_insert_tail(&ren->ren_authlist,
 					    ran);
-					list_insert_tail(&refreshq_queue, ren);
+					list_insert_tail(&nag->refreshq_queue, ren);
 				}
 
-				cv_broadcast(&refreshq_cv);
+				cv_broadcast(&nag->refreshq_cv);
 			} else {
 				kmem_free(ran, sizeof (refreshq_auth_node_t));
 			}
 
-			mutex_exit(&refreshq_lock);
+			mutex_exit(&nag->refreshq_lock);
 		} else {
 			mutex_exit(&p->auth_lock);
 		}
@@ -893,7 +885,7 @@ nfsauth_cache_get(struct exportinfo *exi, struct svc_req *req, int flavor)
 
 	nfsauth_cache_miss++;
 
-	if (!nfsauth_retrieve(exi, svc_getnetid(req->rq_xprt), flavor,
+	if (!nfsauth_retrieve(nag, exi, svc_getnetid(req->rq_xprt), flavor,
 	    &addr, &access)) {
 		kmem_free(addr.buf, addr.len);
 		return (access);
@@ -1079,20 +1071,20 @@ nfsauth_free_node(struct auth_cache *p)
  * list.
  */
 static void
-nfsauth_remove_dead_entry(struct auth_cache *dead)
+nfsauth_remove_dead_entry(nfsauth_globals_t *nag, struct auth_cache *dead)
 {
 	struct auth_cache	*p;
 	struct auth_cache	*prev;
 	struct auth_cache	*next;
 
-	mutex_enter(&refreshq_lock);
+	mutex_enter(&nag->refreshq_lock);
 	prev = NULL;
-	for (p = refreshq_dead_entries; p != NULL; p = next) {
+	for (p = nag->refreshq_dead_entries; p != NULL; p = next) {
 		next = p->auth_next;
 
 		if (p == dead) {
 			if (prev == NULL)
-				refreshq_dead_entries = next;
+				nag->refreshq_dead_entries = next;
 			else
 				prev->auth_next = next;
 
@@ -1102,7 +1094,7 @@ nfsauth_remove_dead_entry(struct auth_cache *dead)
 
 		prev = p;
 	}
-	mutex_exit(&refreshq_lock);
+	mutex_exit(&nag->refreshq_lock);
 }
 
 /*
@@ -1185,13 +1177,18 @@ exi_cache_trim(struct exportinfo *exi)
 			    auth_state_t, p->auth_state);
 
 			if (p->auth_state != NFS_AUTH_FRESH) {
+				nfsauth_globals_t *nag;
+
+				nag = zone_getspecific(nfsauth_zone_key,
+				    curzone);
+
 				p->auth_state = NFS_AUTH_INVALID;
 				mutex_exit(&p->auth_lock);
 
-				mutex_enter(&refreshq_lock);
-				p->auth_next = refreshq_dead_entries;
-				refreshq_dead_entries = p;
-				mutex_exit(&refreshq_lock);
+				mutex_enter(&nag->refreshq_lock);
+				p->auth_next = nag->refreshq_dead_entries;
+				nag->refreshq_dead_entries = p;
+				mutex_exit(&nag->refreshq_lock);
 			} else {
 				mutex_exit(&p->auth_lock);
 				nfsauth_free_node(p);
