@@ -2525,6 +2525,7 @@ nfs_srvinit(void)
 	rfs_srvrinit();
 	rfs3_srvrinit();
 	nfsauth_init();
+	nfscmd_init();
 
 	/*
 	 * Zone for NFS server global veriables
@@ -2543,6 +2544,7 @@ nfs_srvinit(void)
 void
 nfs_srvfini(void)
 {
+	nfscmd_fini();
 	nfsauth_fini();
 	rfs3_srvrfini();
 	rfs_srvrfini();
