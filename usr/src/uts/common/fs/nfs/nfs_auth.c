@@ -260,6 +260,7 @@ nfsauth_zone_fini(zoneid_t zoneid, void *data)
 	cv_destroy(&nag->refreshq_cv);
 	mutex_destroy(&nag->refreshq_lock);
 	mutex_destroy(&nag->mountd_lock);
+	kmem_free(nag, sizeof (*nag));
 }
 
 /*
