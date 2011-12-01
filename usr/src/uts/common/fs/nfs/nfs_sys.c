@@ -109,9 +109,6 @@ nfssys(enum nfssys_op opcode, void *arg)
 			break;
 		}
 
-		if (!INGLOBALZONE(curproc))
-			return (set_errno(EPERM));
-
 		STRUCT_INIT(u_clr, get_udatamodel());
 
 		if (copyin(arg, STRUCT_BUF(u_clr), STRUCT_SIZE(u_clr)))
@@ -202,8 +199,6 @@ nfssys(enum nfssys_op opcode, void *arg)
 	case NFS_GETFH: { /* get a file handle */
 		STRUCT_DECL(nfs_getfh_args, nga);
 
-		if (!INGLOBALZONE(curproc))
-			return (set_errno(EPERM));
 		STRUCT_INIT(nga, get_udatamodel());
 		if (copyin(arg, STRUCT_BUF(nga), STRUCT_SIZE(nga)))
 			return (set_errno(EFAULT));
