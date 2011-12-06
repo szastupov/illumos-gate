@@ -20,6 +20,7 @@
  */
 
 /*
+ * Copyright 2011 Nexenta Systems, Inc.  All rights reserved.
  * Copyright (c) 2007, 2010, Oracle and/or its affiliates. All rights reserved.
  */
 
@@ -224,10 +225,13 @@ sharefs_unmount(vfs_t *vfsp, int flag, struct cred *cr)
 		return (EPERM);
 
 	/*
-	 * We do not currently support forced unmounts
+	 * Generally, it's safe to unmount sharefs with active vnodes but
+	 * let's make sure that the caller knows what he do.
 	 */
-	if (flag & MS_FORCE)
-		return (ENOTSUP);
+	if (!(flag & MS_FORCE)) {
+		if (vfsp->vfs_count > 2)
+			return (EBUSY);
+	}
 
 	/*
 	 * We should never have a reference count of less than 2: one for the
@@ -241,16 +245,6 @@ sharefs_unmount(vfs_t *vfsp, int flag, struct cred *cr)
 	data = vfsp->vfs_data;
 	if (data->sharefs_vfs_root->v_count > 1)
 		return (EBUSY);
-
-	/*
-	 * Only allow an unmount iff there are no entries in memory.
-	 */
-	rw_enter(&sharetab_lock, RW_READER);
-	if (sharetab_size != 0) {
-		rw_exit(&sharetab_lock);
-		return (EBUSY);
-	}
-	rw_exit(&sharetab_lock);
 
 	/*
 	 * Release the last hold on the root vnode
