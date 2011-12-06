@@ -541,6 +541,11 @@ typedef struct zone {
  */
 #define	ZONE_PS_INVAL	PS_MYID
 
+/*
+ * A root vnode of current zone
+ */
+#define ZONE_ROOTVP()	(curproc->p_zone->zone_rootvp)
+
 
 extern zone_t zone0;
 extern zone_t *global_zone;
