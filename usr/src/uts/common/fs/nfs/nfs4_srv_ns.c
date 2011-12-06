@@ -664,7 +664,7 @@ treeclimb_export(struct exportinfo *exip)
 				vis_head = NULL;
 			}
 
-			if (VN_CMP(vp, rootdir)) {
+			if (VN_CMP(vp, ZONE_ROOTVP())) {
 				/* at system root */
 				/*
 				 * If sharing "/", new_exi is shared exportinfo

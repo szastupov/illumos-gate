@@ -368,7 +368,7 @@ rfs_lookup(struct nfsdiropargs *da, struct nfsdiropres *dr,
 	 * location of the public filehandle.
 	 */
 	if (exi != NULL && (exi->exi_export.ex_flags & EX_PUBLIC)) {
-		dvp = rootdir;
+		dvp = ZONE_ROOTVP();
 		VN_HOLD(dvp);
 	} else {
 		dvp = nfs_fhtovp(fhp, exi);
@@ -2478,7 +2478,7 @@ rfs_rmdir(struct nfsdiropargs *da, enum nfsstat *status,
 	 * supplying a vnode known to exist and illegal to
 	 * remove.
 	 */
-	error = VOP_RMDIR(vp, da->da_name, rootdir, cr, NULL, 0);
+	error = VOP_RMDIR(vp, da->da_name, ZONE_ROOTVP(), cr, NULL, 0);
 
 	/*
 	 * Force modified data and metadata out to stable storage.

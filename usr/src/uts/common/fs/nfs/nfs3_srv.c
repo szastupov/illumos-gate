@@ -405,7 +405,7 @@ rfs3_lookup(LOOKUP3args *args, LOOKUP3res *resp, struct exportinfo *exi,
 	 * location of the public filehandle.
 	 */
 	if (exi != NULL && (exi->exi_export.ex_flags & EX_PUBLIC)) {
-		dvp = rootdir;
+		dvp = ZONE_ROOTVP();
 		VN_HOLD(dvp);
 
 		DTRACE_NFSV3_4(op__lookup__start, struct svc_req *, req,
@@ -2846,7 +2846,7 @@ rfs3_rmdir(RMDIR3args *args, RMDIR3res *resp, struct exportinfo *exi,
 		goto err1;
 	}
 
-	error = VOP_RMDIR(vp, name, rootdir, cr, NULL, 0);
+	error = VOP_RMDIR(vp, name, ZONE_ROOTVP(), cr, NULL, 0);
 
 	if (name != args->object.name)
 		kmem_free(name, MAXPATHLEN + 1);

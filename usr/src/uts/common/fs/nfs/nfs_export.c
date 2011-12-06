@@ -825,7 +825,7 @@ nfs_export_zone_init(zoneid_t zoneid)
 	ne->exi_root->exi_count = 1;
 	mutex_init(&ne->exi_root->exi_lock, NULL, MUTEX_DEFAULT, NULL);
 
-	ne->exi_root->exi_vp = rootdir;
+	ne->exi_root->exi_vp = ZONE_ROOTVP();
 	ne->exi_rootfid.fid_len = MAXFIDSZ;
 	error = vop_fid_pseudo(ne->exi_root->exi_vp, &ne->exi_rootfid);
 	if (error) {

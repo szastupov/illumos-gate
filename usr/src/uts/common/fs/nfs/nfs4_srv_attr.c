@@ -130,7 +130,7 @@ rfs4_attr_init()
 	struct statvfs64 sb;
 
 	rfs4_init_compound_state(&cs);
-	cs.vp = rootvp;
+	cs.vp = ZONE_ROOTVP();
 	cs.fh.nfs_fh4_val = NULL;
 	cs.cr = kcred;
 
@@ -1304,7 +1304,7 @@ rfs4_get_mntdfileid(nfs4_attr_cmd_t cmd, struct nfs4_svgetit_arg *sarg)
 		 * another getattr -- just use the one in sarg.
 		 */
 		if (VN_CMP(vp, stubvp)) {
-			ASSERT(VN_CMP(vp, rootdir));
+			ASSERT(VN_CMP(vp, ZONE_ROOTVP()));
 			vap = sarg->vap;
 		} else {
 			va.va_mask = AT_NODEID;

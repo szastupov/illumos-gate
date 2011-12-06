@@ -2864,7 +2864,7 @@ rfs_pathname(
 		while (*path == '/')
 			path++;
 
-		startdvp = rootdir;
+		startdvp = ZONE_ROOTVP();
 	}
 
 	error = pn_get_buf(path, UIO_SYSSPACE, &pn, namebuf, sizeof (namebuf));
@@ -2887,7 +2887,7 @@ rfs_pathname(
 		}
 		VN_HOLD(startdvp);
 		error = lookuppnvp(&pn, NULL, NO_FOLLOW, dirvpp, compvpp,
-		    rootdir, startdvp, cr);
+		    ZONE_ROOTVP(), startdvp, cr);
 	}
 	if (error == ENAMETOOLONG) {
 		/*
@@ -2904,7 +2904,7 @@ rfs_pathname(
 		}
 		VN_HOLD(startdvp);
 		error = lookuppnvp(&pn, NULL, NO_FOLLOW, dirvpp, compvpp,
-		    rootdir, startdvp, cr);
+		    ZONE_ROOTVP(), startdvp, cr);
 		pn_free(&pn);
 	}
 

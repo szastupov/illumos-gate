@@ -898,7 +898,7 @@ do_rfs4_op_secinfo(struct compound_state *cs, char *nm, SECINFO4res *resp)
 			 * If at the system root, then can
 			 * go up no further.
 			 */
-			if (VN_CMP(dvp, rootdir))
+			if (VN_CMP(dvp, ZONE_ROOTVP()))
 				return (puterrno4(ENOENT));
 
 			/*
@@ -2638,7 +2638,7 @@ do_rfs4_op_lookup(char *nm, struct svc_req *req, struct compound_state *cs)
 			 * If at the system root, then can
 			 * go up no further.
 			 */
-			if (VN_CMP(cs->vp, rootdir))
+			if (VN_CMP(cs->vp, ZONE_ROOTVP()))
 				return (puterrno4(ENOENT));
 
 			/*
@@ -3604,7 +3604,7 @@ rfs4_op_putrootfh(nfs_argop4 *argop, nfs_resop4 *resop, struct svc_req *req,
 	 */
 	bzero(&fid, sizeof (fid));
 	fid.fid_len = MAXFIDSZ;
-	error = vop_fid_pseudo(rootdir, &fid);
+	error = vop_fid_pseudo(ZONE_ROOTVP(), &fid);
 	if (error != 0) {
 		*cs->statusp = resp->status = puterrno4(error);
 		goto out;
@@ -3618,7 +3618,7 @@ rfs4_op_putrootfh(nfs_argop4 *argop, nfs_resop4 *resop, struct svc_req *req,
 	 * one or more exports further down in the server's
 	 * file tree.
 	 */
-	exi = checkexport4(&rootdir->v_vfsp->vfs_fsid, &fid, NULL);
+	exi = checkexport4(&ZONE_ROOTVP()->v_vfsp->vfs_fsid, &fid, NULL);
 	if (exi == NULL || exi->exi_export.ex_flags & EX_PUBLIC) {
 		NFS4_DEBUG(rfs4_debug,
 		    (CE_WARN, "rfs4_op_putrootfh: export check failure"));
@@ -3630,7 +3630,7 @@ rfs4_op_putrootfh(nfs_argop4 *argop, nfs_resop4 *resop, struct svc_req *req,
 	 * Now make a filehandle based on the root
 	 * export and root vnode.
 	 */
-	error = makefh4(&cs->fh, rootdir, exi);
+	error = makefh4(&cs->fh, ZONE_ROOTVP(), exi);
 	if (error != 0) {
 		*cs->statusp = resp->status = puterrno4(error);
 		goto out;
@@ -3639,11 +3639,11 @@ rfs4_op_putrootfh(nfs_argop4 *argop, nfs_resop4 *resop, struct svc_req *req,
 	sav_exi = cs->exi;
 	cs->exi = exi;
 
-	VN_HOLD(rootdir);
-	cs->vp = rootdir;
+	VN_HOLD(ZONE_ROOTVP());
+	cs->vp = ZONE_ROOTVP();
 
 	if ((resp->status = call_checkauth4(cs, req)) != NFS4_OK) {
-		VN_RELE(rootdir);
+		VN_RELE(cs->vp);
 		cs->vp = NULL;
 		cs->exi = sav_exi;
 		goto out;
@@ -4276,7 +4276,7 @@ rfs4_op_remove(nfs_argop4 *argop, nfs_resop4 *resop, struct svc_req *req,
 			 * NFS4ERR_EXIST to NFS4ERR_NOTEMPTY to
 			 * transmit over the wire.
 			 */
-			if ((error = VOP_RMDIR(dvp, name, rootdir, cs->cr,
+			if ((error = VOP_RMDIR(dvp, name, ZONE_ROOTVP(), cs->cr,
 			    NULL, 0)) == EEXIST)
 				error = ENOTEMPTY;
 		}
