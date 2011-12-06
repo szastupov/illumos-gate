@@ -70,18 +70,7 @@
 			strlen(sh->sh_##field) + 1);			\
 	}
 
-sharetab_t	*sharefs_sharetab = NULL;	/* The incore sharetab. */
-size_t		sharetab_size;
-uint_t		sharetab_count;
-
-krwlock_t	sharetab_lock;	/* lock to protect the cached sharetab */
-
-krwlock_t	sharefs_lock;	/* lock to protect the vnode ops */
-
-timestruc_t	sharetab_mtime;
-timestruc_t	sharetab_snap_time;
-
-uint_t		sharetab_generation;	/* Only increments and wraps! */
+static zone_key_t sharetab_zone_key;
 
 /*
  * Take care of cleaning up a share.
@@ -108,7 +97,7 @@ sharefree(share_t *sh, sharefs_lens_t *shl)
  * cleaning up the memory associated with the share argument.
  */
 static int
-sharefs_remove(share_t *sh, sharefs_lens_t *shl)
+sharefs_remove(sharetab_globals_t *sg, share_t *sh, sharefs_lens_t *shl)
 {
 	int		iHash;
 	sharetab_t	*sht;
@@ -118,8 +107,8 @@ sharefs_remove(share_t *sh, sharefs_lens_t *shl)
 	if (!sh)
 		return (ENOENT);
 
-	rw_enter(&sharetab_lock, RW_WRITER);
-	for (sht = sharefs_sharetab; sht != NULL; sht = sht->s_next) {
+	rw_enter(&sg->sharetab_lock, RW_WRITER);
+	for (sht = sg->sharefs_sharetab; sht != NULL; sht = sht->s_next) {
 		if (strcmp(sh->sh_fstype, sht->s_fstype) == 0) {
 			break;
 		}
@@ -130,7 +119,7 @@ sharefs_remove(share_t *sh, sharefs_lens_t *shl)
 	 * matches the share passed in.
 	 */
 	if (!sht) {
-		rw_exit(&sharetab_lock);
+		rw_exit(&sg->sharetab_lock);
 		return (ENOENT);
 	}
 
@@ -156,13 +145,13 @@ sharefs_remove(share_t *sh, sharefs_lens_t *shl)
 			ASSERT(sht->s_buckets[iHash].ssh_count != 0);
 			atomic_add_32(&sht->s_buckets[iHash].ssh_count, -1);
 			atomic_add_32(&sht->s_count, -1);
-			atomic_add_32(&sharetab_count, -1);
+			atomic_add_32(&sg->sharetab_count, -1);
 
-			ASSERT(sharetab_size >= s->sh_size);
-			sharetab_size -= s->sh_size;
+			ASSERT(sg->sharetab_size >= s->sh_size);
+			sg->sharetab_size -= s->sh_size;
 
-			gethrestime(&sharetab_mtime);
-			atomic_add_32(&sharetab_generation, 1);
+			gethrestime(&sg->sharetab_mtime);
+			atomic_add_32(&sg->sharetab_generation, 1);
 
 			break;
 		}
@@ -170,7 +159,7 @@ sharefs_remove(share_t *sh, sharefs_lens_t *shl)
 		p = s;
 	}
 
-	rw_exit(&sharetab_lock);
+	rw_exit(&sg->sharetab_lock);
 
 	if (!s) {
 		return (ENOENT);
@@ -191,7 +180,7 @@ sharefs_remove(share_t *sh, sharefs_lens_t *shl)
  * The caller must have allocated memory for us to use.
  */
 static int
-sharefs_add(share_t *sh, sharefs_lens_t *shl)
+sharefs_add(sharetab_globals_t *sg, share_t *sh, sharefs_lens_t *shl)
 {
 	int		iHash;
 	sharetab_t	*sht;
@@ -206,8 +195,8 @@ sharefs_add(share_t *sh, sharefs_lens_t *shl)
 	/*
 	 * We need to find the hash buckets for the fstype.
 	 */
-	rw_enter(&sharetab_lock, RW_WRITER);
-	for (sht = sharefs_sharetab; sht != NULL; sht = sht->s_next) {
+	rw_enter(&sg->sharetab_lock, RW_WRITER);
+	for (sht = sg->sharefs_sharetab; sht != NULL; sht = sht->s_next) {
 		if (strcmp(sh->sh_fstype, sht->s_fstype) == 0) {
 			break;
 		}
@@ -223,8 +212,8 @@ sharefs_add(share_t *sh, sharefs_lens_t *shl)
 		sht->s_fstype = kmem_zalloc(n + 1, KM_SLEEP);
 		(void) strncpy(sht->s_fstype, sh->sh_fstype, n);
 
-		sht->s_next = sharefs_sharetab;
-		sharefs_sharetab = sht;
+		sht->s_next = sg->sharefs_sharetab;
+		sg->sharefs_sharetab = sht;
 	}
 
 	/*
@@ -271,20 +260,20 @@ sharefs_add(share_t *sh, sharefs_lens_t *shl)
 
 			sh->sh_next = s->sh_next;
 
-			ASSERT(sharetab_size >= s->sh_size);
-			sharetab_size -= s->sh_size;
-			sharetab_size += sh->sh_size;
+			ASSERT(sg->sharetab_size >= s->sh_size);
+			sg->sharetab_size -= s->sh_size;
+			sg->sharetab_size += sh->sh_size;
 
 			/*
 			 * Get rid of the old node.
 			 */
 			sharefree(s, NULL);
 
-			gethrestime(&sharetab_mtime);
-			atomic_add_32(&sharetab_generation, 1);
+			gethrestime(&sg->sharetab_mtime);
+			atomic_add_32(&sg->sharetab_generation, 1);
 
 			ASSERT(sht->s_buckets[iHash].ssh_count != 0);
-			rw_exit(&sharetab_lock);
+			rw_exit(&sg->sharetab_lock);
 
 			return (0);
 		}
@@ -300,29 +289,56 @@ sharefs_add(share_t *sh, sharefs_lens_t *shl)
 	sht->s_buckets[iHash].ssh_sh = sh;
 	atomic_add_32(&sht->s_buckets[iHash].ssh_count, 1);
 	atomic_add_32(&sht->s_count, 1);
-	atomic_add_32(&sharetab_count, 1);
-	sharetab_size += sh->sh_size;
+	atomic_add_32(&sg->sharetab_count, 1);
+	sg->sharetab_size += sh->sh_size;
 
-	gethrestime(&sharetab_mtime);
-	atomic_add_32(&sharetab_generation, 1);
+	gethrestime(&sg->sharetab_mtime);
+	atomic_add_32(&sg->sharetab_generation, 1);
 
-	rw_exit(&sharetab_lock);
+	rw_exit(&sg->sharetab_lock);
 
 	return (0);
+}
+
+static void *
+sharetab_zone_init(zoneid_t zoneid)
+{
+	sharetab_globals_t *sg;
+
+	sg = kmem_zalloc(sizeof (*sg), KM_SLEEP);
+
+	rw_init(&sg->sharetab_lock, NULL, RW_DEFAULT, NULL);
+	rw_init(&sg->sharefs_lock, NULL, RW_DEFAULT, NULL);
+
+	sg->sharetab_size = 0;
+	sg->sharetab_count = 0;
+	sg->sharetab_generation = 1;
+
+	gethrestime(&sg->sharetab_mtime);
+	gethrestime(&sg->sharetab_snap_time);
+
+	return (sg);
+}
+
+static void
+sharetab_zone_fini(zoneid_t zoneid, void *data)
+{
+	sharetab_globals_t *sg = (sharetab_globals_t*)data;
+
+	kmem_free(sg, sizeof (*sg));
 }
 
 void
 sharefs_sharetab_init(void)
 {
-	rw_init(&sharetab_lock, NULL, RW_DEFAULT, NULL);
-	rw_init(&sharefs_lock, NULL, RW_DEFAULT, NULL);
+	zone_key_create(&sharetab_zone_key, sharetab_zone_init,
+	    NULL, sharetab_zone_fini);
+}
 
-	sharetab_size = 0;
-	sharetab_count = 0;
-	sharetab_generation = 1;
-
-	gethrestime(&sharetab_mtime);
-	gethrestime(&sharetab_snap_time);
+sharetab_globals_t *
+sharetab_get_globals(zone_t *zone)
+{
+	return zone_getspecific(sharetab_zone_key, zone);
 }
 
 int
@@ -339,6 +355,8 @@ sharefs_impl(enum sharefs_sys_op opcode, share_t *sh_in, uint32_t iMaxLen)
 
 	char		*buf = NULL;
 
+	sharetab_globals_t *sg = sharetab_get_globals(curzone);
+
 	STRUCT_DECL(share, u_sh);
 
 	bufsz = iMaxLen;
@@ -347,12 +365,12 @@ sharefs_impl(enum sharefs_sys_op opcode, share_t *sh_in, uint32_t iMaxLen)
 	 * Before we do anything, lets make sure we have
 	 * a sharetab in memory if we need one.
 	 */
-	rw_enter(&sharetab_lock, RW_READER);
+	rw_enter(&sg->sharetab_lock, RW_READER);
 	switch (opcode) {
 	case (SHAREFS_REMOVE) :
 	case (SHAREFS_REPLACE) :
-		if (!sharefs_sharetab) {
-			rw_exit(&sharetab_lock);
+		if (!sg->sharefs_sharetab) {
+			rw_exit(&sg->sharetab_lock);
 			return (set_errno(ENOENT));
 		}
 		break;
@@ -360,7 +378,7 @@ sharefs_impl(enum sharefs_sys_op opcode, share_t *sh_in, uint32_t iMaxLen)
 	default :
 		break;
 	}
-	rw_exit(&sharetab_lock);
+	rw_exit(&sg->sharetab_lock);
 
 	model = get_udatamodel();
 
@@ -396,12 +414,12 @@ sharefs_impl(enum sharefs_sys_op opcode, share_t *sh_in, uint32_t iMaxLen)
 		SHARETAB_COPYIN(opts);
 		SHARETAB_COPYIN(descr);
 
-		error = sharefs_add(sh, &shl);
+		error = sharefs_add(sg, sh, &shl);
 		break;
 
 	case (SHAREFS_REMOVE) :
 
-		error = sharefs_remove(sh, &shl);
+		error = sharefs_remove(sg, sh, &shl);
 		break;
 
 	default:
