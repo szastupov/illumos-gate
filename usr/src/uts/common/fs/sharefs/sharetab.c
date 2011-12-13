@@ -450,7 +450,8 @@ cleanup:
 int
 sharefs(enum sharefs_sys_op opcode, share_t *sh_in, uint32_t iMaxLen)
 {
-	if (secpolicy_sys_config(CRED(), B_FALSE) != 0)
+	/* behave like zfs_secpolicy_share() */
+	if (secpolicy_nfs(CRED()) != 0)
 		return (set_errno(EPERM));
 
 	return (sharefs_impl(opcode, sh_in, iMaxLen));
