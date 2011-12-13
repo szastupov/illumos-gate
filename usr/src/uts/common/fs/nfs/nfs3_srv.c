@@ -67,6 +67,13 @@
 #include <inet/ip6.h>
 
 /*
+ * Zone global variables of NFSv3 server
+ */
+typedef struct nfs3_srv {
+	writeverf3 write3verf;
+} nfs3_srv_t;
+
+/*
  * These are the interface routines for the server side of the
  * Network File System.  See the NFS version 3 protocol specification
  * for a description of this interface.

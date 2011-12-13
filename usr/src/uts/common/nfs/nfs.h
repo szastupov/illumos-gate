@@ -2094,11 +2094,6 @@ struct COMMIT3res {
 };
 typedef struct COMMIT3res COMMIT3res;
 
-struct nfs3_srv {
-	writeverf3 write3verf;
-};
-typedef struct nfs3_srv nfs3_srv_t;
-
 #define	NFS3_PROGRAM ((rpcprog_t)100003)
 #define	NFS_V3 ((rpcvers_t)3)
 #define	NFSPROC3_NULL ((rpcproc_t)0)
