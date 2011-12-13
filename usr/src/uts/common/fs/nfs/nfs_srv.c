@@ -20,6 +20,7 @@
  */
 /*
  * Copyright (c) 1994, 2010, Oracle and/or its affiliates. All rights reserved.
+ * Copyright 2011 Nexenta Systems, Inc.  All rights reserved.
  */
 
 /*
@@ -67,6 +68,31 @@
 
 #include <sys/strsubr.h>
 
+struct rfs_async_write_list;
+
+/*
+ * Zone globals of NFSv2 server
+ */
+typedef struct nfs_srv {
+	kmutex_t			async_write_lock;
+	struct rfs_async_write_list	*async_write_head;
+
+	/*
+	 * enables write clustering if == 1
+	 */
+	int		write_async;
+
+	/*
+	 * Hints/misses countes (for debugging)
+	 */
+#ifdef DEBUG
+	int		write_sync_hits;
+	int		write_sync_misses;
+	int		write_hits;
+	int		write_misses;
+#endif /* DEBUG */
+} nfs_srv_t;
+
 /*
  * These are the interface routines for the server side of the
  * Network File System.  See the NFS version 2 protocol specification
@@ -76,6 +102,9 @@
 static int	sattr_to_vattr(struct nfssattr *, struct vattr *);
 static void	acl_perm(struct vnode *, struct exportinfo *, struct vattr *,
 			cred_t *);
+static void	*rfs_zone_init(zoneid_t zoneid);
+static void	rfs_zone_fini(zoneid_t zoneid, void *data);
+
 
 /*
  * Some "over the wire" UNIX file types.  These are encoded
@@ -87,6 +116,7 @@ static void	acl_perm(struct vnode *, struct exportinfo *, struct vattr *,
 #define	IFSOCK		0140000		/* socket */
 
 u_longlong_t nfs2_srv_caller_id;
+static zone_key_t rfs_zone_key;
 
 /*
  * Get file attributes.
@@ -899,11 +929,6 @@ rfs_read_getfh(struct nfsreadargs *ra)
 
 #define	MAX_IOVECS	12
 
-#ifdef DEBUG
-static int rfs_write_sync_hits = 0;
-static int rfs_write_sync_misses = 0;
-#endif
-
 /*
  * Write data to file.
  * Returns attributes of a file after writing some data to it.
@@ -1049,17 +1074,23 @@ rfs_write_sync(struct nfswriteargs *wa, struct nfsattrstat *ns,
 		error = VOP_WRITE(vp, &uio, FSYNC, cr, &ct);
 		curthread->t_cred = savecred;
 	} else {
+#ifdef DEBUG
+		nfs_srv_t *ns;
+
+		ns = zone_getspecific(rfs_zone_key, curzone);
+#endif
+
 		iovcnt = 0;
 		for (m = wa->wa_mblk; m != NULL; m = m->b_cont)
 			iovcnt++;
 		if (iovcnt <= MAX_IOVECS) {
 #ifdef DEBUG
-			rfs_write_sync_hits++;
+			ns->write_sync_hits++;
 #endif
 			iovp = iov;
 		} else {
 #ifdef DEBUG
-			rfs_write_sync_misses++;
+			ns->write_sync_misses++;
 #endif
 			iovp = kmem_alloc(sizeof (*iovp) * iovcnt, KM_SLEEP);
 		}
@@ -1144,17 +1175,8 @@ struct rfs_async_write_list {
 	struct rfs_async_write_list *next;
 };
 
-static struct rfs_async_write_list *rfs_async_write_head = NULL;
-static kmutex_t rfs_async_write_lock;
-static int rfs_write_async = 1;	/* enables write clustering if == 1 */
-
 #define	MAXCLIOVECS	42
 #define	RFSWRITE_INITVAL (enum nfsstat) -1
-
-#ifdef DEBUG
-static int rfs_write_hits = 0;
-static int rfs_write_misses = 0;
-#endif
 
 /*
  * Write data to file.
@@ -1191,8 +1213,10 @@ rfs_write(struct nfswriteargs *wa, struct nfsattrstat *ns,
 	cred_t *savecred;
 	int in_crit = 0;
 	caller_context_t ct;
+	nfs_srv_t *nsrv;
 
-	if (!rfs_write_async) {
+	nsrv = zone_getspecific(rfs_zone_key, curzone);
+	if (!nsrv->write_async) {
 		rfs_write_sync(wa, ns, exi, req, cr);
 		return;
 	}
@@ -1216,8 +1240,8 @@ rfs_write(struct nfswriteargs *wa, struct nfsattrstat *ns,
 	 * Look to see if there is already a cluster started
 	 * for this file.
 	 */
-	mutex_enter(&rfs_async_write_lock);
-	for (lp = rfs_async_write_head; lp != NULL; lp = lp->next) {
+	mutex_enter(&nsrv->async_write_lock);
+	for (lp = nsrv->async_write_head; lp != NULL; lp = lp->next) {
 		if (bcmp(&wa->wa_fhandle, lp->fhp,
 		    sizeof (fhandle_t)) == 0)
 			break;
@@ -1243,8 +1267,8 @@ rfs_write(struct nfswriteargs *wa, struct nfsattrstat *ns,
 		else
 			trp->list = nrp;
 		while (nrp->ns->ns_status == RFSWRITE_INITVAL)
-			cv_wait(&lp->cv, &rfs_async_write_lock);
-		mutex_exit(&rfs_async_write_lock);
+			cv_wait(&lp->cv, &nsrv->async_write_lock);
+		mutex_exit(&nsrv->async_write_lock);
 
 		return;
 	}
@@ -1261,15 +1285,15 @@ rfs_write(struct nfswriteargs *wa, struct nfsattrstat *ns,
 	nlp->list = nrp;
 	nlp->next = NULL;
 
-	if (rfs_async_write_head == NULL) {
-		rfs_async_write_head = nlp;
+	if (nsrv->async_write_head == NULL) {
+		nsrv->async_write_head = nlp;
 	} else {
-		lp = rfs_async_write_head;
+		lp = nsrv->async_write_head;
 		while (lp->next != NULL)
 			lp = lp->next;
 		lp->next = nlp;
 	}
-	mutex_exit(&rfs_async_write_lock);
+	mutex_exit(&nsrv->async_write_lock);
 
 	/*
 	 * Convert the file handle common to all of the requests
@@ -1277,11 +1301,11 @@ rfs_write(struct nfswriteargs *wa, struct nfsattrstat *ns,
 	 */
 	vp = nfs_fhtovp(&wa->wa_fhandle, exi);
 	if (vp == NULL) {
-		mutex_enter(&rfs_async_write_lock);
-		if (rfs_async_write_head == nlp)
-			rfs_async_write_head = nlp->next;
+		mutex_enter(&nsrv->async_write_lock);
+		if (nsrv->async_write_head == nlp)
+			nsrv->async_write_head = nlp->next;
 		else {
-			lp = rfs_async_write_head;
+			lp = nsrv->async_write_head;
 			while (lp->next != nlp)
 				lp = lp->next;
 			lp->next = nlp->next;
@@ -1292,7 +1316,7 @@ rfs_write(struct nfswriteargs *wa, struct nfsattrstat *ns,
 			rp->thread->t_flag |= t_flag;
 		}
 		cv_broadcast(&nlp->cv);
-		mutex_exit(&rfs_async_write_lock);
+		mutex_exit(&nsrv->async_write_lock);
 
 		return;
 	}
@@ -1303,11 +1327,11 @@ rfs_write(struct nfswriteargs *wa, struct nfsattrstat *ns,
 	 */
 	if (vp->v_type != VREG) {
 		VN_RELE(vp);
-		mutex_enter(&rfs_async_write_lock);
-		if (rfs_async_write_head == nlp)
-			rfs_async_write_head = nlp->next;
+		mutex_enter(&nsrv->async_write_lock);
+		if (nsrv->async_write_head == nlp)
+			nsrv->async_write_head = nlp->next;
 		else {
-			lp = rfs_async_write_head;
+			lp = nsrv->async_write_head;
 			while (lp->next != nlp)
 				lp = lp->next;
 			lp->next = nlp->next;
@@ -1318,7 +1342,7 @@ rfs_write(struct nfswriteargs *wa, struct nfsattrstat *ns,
 			rp->thread->t_flag |= t_flag;
 		}
 		cv_broadcast(&nlp->cv);
-		mutex_exit(&rfs_async_write_lock);
+		mutex_exit(&nsrv->async_write_lock);
 
 		return;
 	}
@@ -1350,11 +1374,11 @@ rfs_write(struct nfswriteargs *wa, struct nfsattrstat *ns,
 		VN_RELE(vp);
 		/* mark as wouldblock so response is dropped */
 		curthread->t_flag |= T_WOULDBLOCK;
-		mutex_enter(&rfs_async_write_lock);
-		if (rfs_async_write_head == nlp)
-			rfs_async_write_head = nlp->next;
+		mutex_enter(&nsrv->async_write_lock);
+		if (nsrv->async_write_head == nlp)
+			nsrv->async_write_head = nlp->next;
 		else {
-			lp = rfs_async_write_head;
+			lp = nsrv->async_write_head;
 			while (lp->next != nlp)
 				lp = lp->next;
 			lp->next = nlp->next;
@@ -1366,7 +1390,7 @@ rfs_write(struct nfswriteargs *wa, struct nfsattrstat *ns,
 			}
 		}
 		cv_broadcast(&nlp->cv);
-		mutex_exit(&rfs_async_write_lock);
+		mutex_exit(&nsrv->async_write_lock);
 
 		return;
 	}
@@ -1388,16 +1412,16 @@ rfs_write(struct nfswriteargs *wa, struct nfsattrstat *ns,
 	 * will allow more requests to be clustered in this
 	 * second cluster.
 	 */
-	mutex_enter(&rfs_async_write_lock);
-	if (rfs_async_write_head == nlp)
-		rfs_async_write_head = nlp->next;
+	mutex_enter(&nsrv->async_write_lock);
+	if (nsrv->async_write_head == nlp)
+		nsrv->async_write_head = nlp->next;
 	else {
-		lp = rfs_async_write_head;
+		lp = nsrv->async_write_head;
 		while (lp->next != nlp)
 			lp = lp->next;
 		lp->next = nlp->next;
 	}
-	mutex_exit(&rfs_async_write_lock);
+	mutex_exit(&nsrv->async_write_lock);
 
 	/*
 	 * Step through the list of requests in this cluster.
@@ -1507,12 +1531,12 @@ rfs_write(struct nfswriteargs *wa, struct nfsattrstat *ns,
 
 		if (iovcnt <= MAXCLIOVECS) {
 #ifdef DEBUG
-			rfs_write_hits++;
+			nsrv->write_hits++;
 #endif
 			niovp = iov;
 		} else {
 #ifdef DEBUG
-			rfs_write_misses++;
+			nsrv->write_misses++;
 #endif
 			niovp = kmem_alloc(sizeof (*niovp) * iovcnt, KM_SLEEP);
 		}
@@ -1642,7 +1666,7 @@ rfs_write(struct nfswriteargs *wa, struct nfsattrstat *ns,
 	VN_RELE(vp);
 
 	t_flag = curthread->t_flag & T_WOULDBLOCK;
-	mutex_enter(&rfs_async_write_lock);
+	mutex_enter(&nsrv->async_write_lock);
 	for (rp = nlp->list; rp != NULL; rp = rp->list) {
 		if (rp->ns->ns_status == RFSWRITE_INITVAL) {
 			rp->ns->ns_status = puterrno(error);
@@ -1650,7 +1674,7 @@ rfs_write(struct nfswriteargs *wa, struct nfsattrstat *ns,
 		}
 	}
 	cv_broadcast(&nlp->cv);
-	mutex_exit(&rfs_async_write_lock);
+	mutex_exit(&nsrv->async_write_lock);
 
 }
 
@@ -2972,14 +2996,36 @@ acl_perm(struct vnode *vp, struct exportinfo *exi, struct vattr *va, cred_t *cr)
 void
 rfs_srvrinit(void)
 {
-	mutex_init(&rfs_async_write_lock, NULL, MUTEX_DEFAULT, NULL);
 	nfs2_srv_caller_id = fs_new_caller_id();
+	zone_key_create(&rfs_zone_key, rfs_zone_init, NULL, rfs_zone_fini);
 }
 
 void
 rfs_srvrfini(void)
 {
-	mutex_destroy(&rfs_async_write_lock);
+}
+
+static void *
+rfs_zone_init(zoneid_t zoneid)
+{
+	nfs_srv_t *ns;
+
+	ns = kmem_zalloc(sizeof (*ns), KM_SLEEP);
+
+	mutex_init(&ns->async_write_lock, NULL, MUTEX_DEFAULT, NULL);
+	ns->write_async = 1;
+
+	return (ns);
+}
+
+static void
+rfs_zone_fini(zoneid_t zoneid, void *data)
+{
+	nfs_srv_t *ns;
+
+	ns = (nfs_srv_t *)data;
+	mutex_destroy(&ns->async_write_lock);
+	kmem_free(ns, sizeof (*ns));
 }
 
 static int
