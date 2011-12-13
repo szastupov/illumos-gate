@@ -74,16 +74,22 @@ typedef struct nfs3_srv {
 } nfs3_srv_t;
 
 /*
- * These are the interface routines for the server side of the
- * Network File System.  See the NFS version 3 protocol specification
- * for a description of this interface.
+ * XXX: these debugging parameters are configured
+ * only statically, so there's no reason to move
+ * them inside the zone globals structure.
  */
-
 #ifdef DEBUG
 int rfs3_do_pre_op_attr = 1;
 int rfs3_do_post_op_attr = 1;
 int rfs3_do_post_op_fh3 = 1;
 #endif
+
+
+/*
+ * These are the interface routines for the server side of the
+ * Network File System.  See the NFS version 3 protocol specification
+ * for a description of this interface.
+ */
 
 static int	sattr3_to_vattr(sattr3 *, struct vattr *);
 static int	vattr_to_fattr3(struct vattr *, fattr3 *);
@@ -3676,7 +3682,7 @@ rfs3_readdir_free(READDIR3res *resp)
 		BYTES_PER_XDR_UNIT + \
 	NFS3_MAXFHSIZE + roundup(namelen, BYTES_PER_XDR_UNIT))
 
-static int rfs3_readdir_unit = MAXBSIZE;
+static const int rfs3_readdir_unit = MAXBSIZE;
 
 /* ARGSUSED */
 void
@@ -4589,7 +4595,7 @@ sattr3_to_vattr(sattr3 *sap, struct vattr *vap)
 	return (0);
 }
 
-static ftype3 vt_to_nf3[] = {
+static const ftype3 vt_to_nf3[] = {
 	0, NF3REG, NF3DIR, NF3BLK, NF3CHR, NF3LNK, NF3FIFO, 0, 0, NF3SOCK, 0
 };
 
