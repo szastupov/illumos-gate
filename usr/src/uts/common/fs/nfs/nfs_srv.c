@@ -2777,7 +2777,7 @@ sattr_to_vattr(struct nfssattr *sa, struct vattr *vap)
 	return (0);
 }
 
-static enum nfsftype vt_to_nf[] = {
+static const enum nfsftype vt_to_nf[] = {
 	0, NFREG, NFDIR, NFBLK, NFCHR, NFLNK, 0, 0, 0, NFSOC, 0
 };
 
