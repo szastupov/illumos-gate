@@ -1346,12 +1346,6 @@ static struct rpc_disptable rfs_disptable[] = {
 static int nfs_portmon = 0;
 
 #ifdef DEBUG
-static int cred_hits = 0;
-static int cred_misses = 0;
-#endif
-
-
-#ifdef DEBUG
 /*
  * Debug code to allow disabling of rfs_dispatch() use of
  * fastxdrargs() and fastxdrres() calls for testing purposes.
@@ -1617,13 +1611,18 @@ common_dispatch(struct svc_req *req, SVCXPRT *xprt, rpcvers_t min_vers,
 		cr = xprt->xp_cred;
 		ASSERT(cr != NULL);
 #ifdef DEBUG
-		if (crgetref(cr) != 1) {
-			crfree(cr);
-			cr = crget();
-			xprt->xp_cred = cr;
-			cred_misses++;
-		} else
-			cred_hits++;
+		{
+			nfs_globals_t *ng;
+
+			ng = zone_getspecific(nfssrv_zone_key, curzone);
+			if (crgetref(cr) != 1) {
+				crfree(cr);
+				cr = crget();
+				xprt->xp_cred = cr;
+				ng->cred_misses++;
+			} else
+				ng->cred_hits++;
+		}
 #else
 		if (crgetref(cr) != 1) {
 			crfree(cr);

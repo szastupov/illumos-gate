@@ -101,6 +101,12 @@ struct nfs_globals {
 	 */
 	kcondvar_t		rdma_wait_cv;
 	kmutex_t		rdma_wait_mutex;
+
+#ifdef DEBUG
+	int			cred_hits;
+	int			cred_misses;
+#endif /* DEBUG */
+
 };
 typedef struct nfs_globals nfs_globals_t;
 
