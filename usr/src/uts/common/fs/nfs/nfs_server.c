@@ -179,7 +179,7 @@ _info(struct modinfo *modinfop)
 		fsid, xfid))))
 
 static void	nfs_srv_shutdown_all(int);
-static void	rfs4_server_start(struct nfs_globals *, int);
+static void	rfs4_server_start(nfs_globals_t *, int);
 static void	nullfree(void);
 static void	rfs_dispatch(struct svc_req *, SVCXPRT *);
 static void	acl_dispatch(struct svc_req *, SVCXPRT *);
@@ -264,7 +264,7 @@ bool_t rfs4_minorvers_mismatch(struct svc_req *, SVCXPRT *, void *);
 void
 nfs_srv_offline(void)
 {
-	struct nfs_globals *ng;
+	nfs_globals_t *ng;
 
 	ng = zone_getspecific(nfssrv_zone_key, curzone);
 
@@ -302,7 +302,7 @@ nfs_srv_quiesce_all(void)
 
 static void
 nfs_srv_shutdown_all(int quiesce) {
-	struct nfs_globals *ng;
+	nfs_globals_t *ng;
 
 	ng = zone_getspecific(nfssrv_zone_key, curzone);
 	mutex_enter(&ng->nfs_server_upordown_lock);
@@ -398,7 +398,7 @@ nfs_srv_set_sc_versions(struct file *fp, SVC_CALLOUT_TABLE **sctpp,
 int
 nfs_svc(struct nfs_svc_args *arg, model_t model)
 {
-	struct nfs_globals *ng;
+	nfs_globals_t *ng;
 	file_t *fp;
 	SVCMASTERXPRT *xprt;
 	int error;
@@ -486,7 +486,7 @@ nfs_svc(struct nfs_svc_args *arg, model_t model)
 }
 
 static void
-rfs4_server_start(struct nfs_globals *ng, int nfs4_srv_delegation)
+rfs4_server_start(nfs_globals_t *ng, int nfs4_srv_delegation)
 {
 	/*
 	 * Determine if the server has previously been "started" and
@@ -548,7 +548,7 @@ rfs4_server_start(struct nfs_globals *ng, int nfs4_srv_delegation)
 int
 rdma_start(struct rdma_svc_args *rsa)
 {
-	struct nfs_globals *ng;
+	nfs_globals_t *ng;
 	int error;
 	rdma_xprt_group_t started_rdma_xprts;
 	rdma_stat stat;
@@ -2555,7 +2555,7 @@ nfs_srvfini(void)
 static void *
 nfs_srv_zone_init(zoneid_t zoneid)
 {
-	struct nfs_globals *ng;
+	nfs_globals_t *ng;
 
 	ng = kmem_zalloc(sizeof (*ng), KM_SLEEP);
 
@@ -2575,9 +2575,9 @@ nfs_srv_zone_init(zoneid_t zoneid)
 static void
 nfs_srv_zone_fini(zoneid_t zoneid, void *data)
 {
-	struct nfs_globals *ng;
+	nfs_globals_t *ng;
 
-	ng = (struct nfs_globals *)data;
+	ng = (nfs_globals_t *)data;
 	mutex_destroy(&ng->nfs_server_upordown_lock);
 	cv_destroy(&ng->nfs_server_upordown_cv);
 	mutex_destroy(&ng->rdma_wait_mutex);

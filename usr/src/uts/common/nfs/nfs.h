@@ -20,6 +20,7 @@
  */
 /*
  * Copyright (c) 2010, Oracle and/or its affiliates. All rights reserved.
+ * Copyright 2011 Nexenta Systems, Inc.  All rights reserved.
  */
 
 /*	Copyright (c) 1983, 1984, 1985, 1986, 1987, 1988, 1989 AT&T	*/
@@ -101,6 +102,7 @@ struct nfs_globals {
 	kcondvar_t		rdma_wait_cv;
 	kmutex_t		rdma_wait_mutex;
 };
+typedef struct nfs_globals nfs_globals_t;
 
 /*
  * Default delegation setting for the server ==> "on"
