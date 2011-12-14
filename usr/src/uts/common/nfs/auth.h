@@ -171,61 +171,6 @@ typedef struct varg {
 	} arg_u;
 } varg_t;
 
-#ifdef _KERNEL
-/*
- * If there is ever a problem with loading the
- * module, then nfsauth_fini() needs to be called
- * to remove state. In that event, since the
- * refreshq thread has been started, they need to
- * work together to get rid of state.
- */
-typedef enum nfsauth_refreshq_thread_state {
-	REFRESHQ_THREAD_RUNNING,
-	REFRESHQ_THREAD_FINI_REQ,
-	REFRESHQ_THREAD_HALTED
-} nfsauth_refreshq_thread_state_t;
-
-typedef struct nfsauth_globals {
-	kmutex_t	mountd_lock;
-	door_handle_t   mountd_dh;
-
-        /*
-	 * Used to manipulate things on the refreshq_queue.
-	 * Note that the refresh thread will effectively
-	 * pop a node off of the queue, at which point it
-	 * will no longer need to hold the mutex.
-	 */
-	kmutex_t	refreshq_lock;
-	list_t		refreshq_queue;
-	kcondvar_t	refreshq_cv;
-
-        /*
-	 * A list_t would be overkill. These are auth_cache
-	 * entries which are no longer linked to an exi.
-	 * It should be the case that all of their states
-	 * are NFS_AUTH_INVALID.
-	 *
-	 * I.e., the only way to be put on this list is
-	 * iff their state indicated that they had been placed
-	 * on the refreshq_queue.
-	 *
-	 * Note that while there is no link from the exi or
-	 * back to the exi, the exi can not go away until
-	 * these entries are harvested.
-	 */
-	struct auth_cache		*refreshq_dead_entries;
-	nfsauth_refreshq_thread_state_t	refreshq_thread_state;
-
-	/*
-	 * nfs auth cache statistics
-	 */
-	int nfsauth_cache_hit;
-	int nfsauth_cache_miss;
-	int nfsauth_cache_refresh;
-	int nfsauth_cache_reclaim;
-} nfsauth_globals_t;
-#endif /* _KERNEL */
-
 extern bool_t	xdr_varg(XDR *, varg_t *);
 extern bool_t	xdr_nfsauth_arg(XDR *, nfsauth_arg_t *);
 extern bool_t	xdr_nfsauth_res(XDR *, nfsauth_res_t *);

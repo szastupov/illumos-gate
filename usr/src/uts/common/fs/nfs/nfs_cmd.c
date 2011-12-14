@@ -22,6 +22,9 @@
  * Copyright 2010 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
  */
+/*
+ * Copyright 2011 Nexenta Systems, Inc.  All rights reserved.
+ */
 
 #include <sys/param.h>
 #include <sys/types.h>
