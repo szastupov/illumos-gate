@@ -70,7 +70,12 @@
  * Zone global variables of NFSv3 server
  */
 typedef struct nfs3_srv {
-	writeverf3 write3verf;
+	writeverf3	write3verf;
+
+#ifdef DEBUG
+	int		write_hits;
+	int		write_misses;
+#endif /* DEBUG */
 } nfs3_srv_t;
 
 /*
@@ -83,7 +88,6 @@ int rfs3_do_pre_op_attr = 1;
 int rfs3_do_post_op_attr = 1;
 int rfs3_do_post_op_fh3 = 1;
 #endif
-
 
 /*
  * These are the interface routines for the server side of the
@@ -1341,11 +1345,6 @@ rfs3_read_getfh(READ3args *args)
 
 #define	MAX_IOVECS	12
 
-#ifdef DEBUG
-static int rfs3_write_hits = 0;
-static int rfs3_write_misses = 0;
-#endif
-
 void
 rfs3_write(WRITE3args *args, WRITE3res *resp, struct exportinfo *exi,
 	struct svc_req *req, cred_t *cr)
@@ -1481,12 +1480,12 @@ rfs3_write(WRITE3args *args, WRITE3res *resp, struct exportinfo *exi,
 			iovcnt++;
 		if (iovcnt <= MAX_IOVECS) {
 #ifdef DEBUG
-			rfs3_write_hits++;
+			ns->write_hits++;
 #endif
 			iovp = iov;
 		} else {
 #ifdef DEBUG
-			rfs3_write_misses++;
+			ns->write_misses++;
 #endif
 			iovp = kmem_alloc(sizeof (*iovp) * iovcnt, KM_SLEEP);
 		}
