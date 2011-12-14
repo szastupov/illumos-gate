@@ -163,8 +163,7 @@ nfsauth_init(void)
 }
 
 /*
- * Finalization routine for nfsauth. It is important to call this routine
- * before destroying the exported_lock.
+ * Finalization routine for nfsauth.
  */
 void
 nfsauth_fini(void)
