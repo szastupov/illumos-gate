@@ -108,6 +108,7 @@ static struct kmem_cache *exi_cache_handle;
 static void exi_cache_reclaim(void *);
 static void exi_cache_trim(struct exportinfo *exi);
 static void *nfsauth_zone_init(zoneid_t);
+static void nfsauth_zone_shutdown(zoneid_t zoneid, void *data);
 static void nfsauth_zone_fini(zoneid_t, void *);
 
 extern pri_t minclsyspri;
@@ -192,8 +193,6 @@ mountd_args(uint_t did)
 void
 nfsauth_init(void)
 {
-	nfsauth_globals_t *nag;
-
 	/*
 	 * Allocate nfsauth cache handle
 	 */
@@ -205,15 +204,7 @@ nfsauth_init(void)
 	 * Initialize nfsauth zone
 	 */
 	zone_key_create(&nfsauth_zone_key, nfsauth_zone_init,
-	    NULL, nfsauth_zone_fini);
-
-	/*
-	 * Launch nfsauth refresh thread
-	 */
-	nag = zone_getspecific(nfsauth_zone_key, curzone);
-	(void) zthread_create(NULL, 0, nfsauth_refresh_thread,
-	    nag, 0, minclsyspri);
-	nag->refreshq_thread_state = REFRESHQ_THREAD_RUNNING;
+	    nfsauth_zone_shutdown, nfsauth_zone_fini);
 }
 
 /*
@@ -248,19 +239,24 @@ nfsauth_zone_init(zoneid_t zoneid)
 	cv_init(&nag->refreshq_cv, NULL, CV_DEFAULT, NULL);
 	nag->refreshq_thread_state = REFRESHQ_THREAD_HALTED;
 
+	/*
+	 * Launch nfsauth refresh thread
+	 */
+	nag->refreshq_thread_state = REFRESHQ_THREAD_RUNNING;
+	(void) zthread_create(NULL, 0, nfsauth_refresh_thread,
+						  nag, 0, minclsyspri);
+
 	return (nag);
 }
 
 static void
-nfsauth_zone_fini(zoneid_t zoneid, void *data)
+nfsauth_zone_shutdown(zoneid_t zoneid, void *data)
 {
-	nfsauth_globals_t	*nag;
 	refreshq_exi_node_t	*ren;
 	refreshq_auth_node_t	*ran;
 	struct auth_cache	*p;
 	struct auth_cache	*auth_next;
-
-	nag = (nfsauth_globals_t *)data;
+	nfsauth_globals_t	*nag = data;
 
 	/*
 	 * Prevent the refreshq_thread from getting new
@@ -304,6 +300,14 @@ nfsauth_zone_fini(zoneid_t zoneid, void *data)
 	}
 
 	mutex_exit(&nag->refreshq_lock);
+}
+
+static void
+nfsauth_zone_fini(zoneid_t zoneid, void *data)
+{
+	nfsauth_globals_t	*nag = data;
+
+	ASSERT(nag->refreshq_thread_state == REFRESHQ_THREAD_HALTED);
 
 	list_destroy(&nag->refreshq_queue);
 	cv_destroy(&nag->refreshq_cv);
@@ -790,6 +794,7 @@ nfsauth_refresh_thread(nfsauth_globals_t *nag)
 	nag->refreshq_thread_state = REFRESHQ_THREAD_HALTED;
 	cv_broadcast(&nag->refreshq_cv);
 	CALLB_CPR_EXIT(&cprinfo);
+	DTRACE_PROBE(nfsauth__nfsauth__refresh__thread__exit);
 	zthread_exit();
 }
 
