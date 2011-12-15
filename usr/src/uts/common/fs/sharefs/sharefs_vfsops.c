@@ -219,7 +219,6 @@ static int
 sharefs_unmount(vfs_t *vfsp, int flag, struct cred *cr)
 {
 	sharefs_vfs_t	*data;
-	sharetab_globals_t *sg = sharetab_get_globals(vfsp->vfs_zone);
 
 	if (secpolicy_fs_unmount(cr, vfsp) != 0)
 		return (EPERM);
@@ -242,16 +241,6 @@ sharefs_unmount(vfs_t *vfsp, int flag, struct cred *cr)
 	data = vfsp->vfs_data;
 	if (data->sharefs_vfs_root->v_count > 1)
 		return (EBUSY);
-
-	/*
-	 * Only allow an unmount iff there are no entries in memory.
-	 */
-	rw_enter(&sg->sharetab_lock, RW_READER);
-	if (sg->sharetab_size != 0) {
-		rw_exit(&sg->sharetab_lock);
-		return (EBUSY);
-	}
-	rw_exit(&sg->sharetab_lock);
 
 	/*
 	 * Release the last hold on the root vnode
