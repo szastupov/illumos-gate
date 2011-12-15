@@ -701,7 +701,7 @@ rfs4_deleg_cb_check(rfs4_client_t *cp)
 
 	rfs4_dbe_hold(cp->rc_dbe); /* hold the client struct for thread */
 
-	(void) thread_create(NULL, 0, rfs4_do_cb_null, cp, 0, &p0, TS_RUN,
+	(void) zthread_create(NULL, 0, rfs4_do_cb_null, cp, 0,
 	    minclsyspri);
 }
 
@@ -1024,7 +1024,7 @@ do_recall_file(struct master_recall_args *map)
 
 		recall_count++;
 
-		(void) thread_create(NULL, 0, do_recall, arg, 0, &p0, TS_RUN,
+		(void) zthread_create(NULL, 0, do_recall, arg, 0,
 		    minclsyspri);
 	}
 
@@ -1084,7 +1084,7 @@ rfs4_recall_file(rfs4_file_t *fp,
 	args->recall = recall;
 	args->trunc = trunc;
 
-	(void) thread_create(NULL, 0, do_recall_file, args, 0, &p0, TS_RUN,
+	(void) zthread_create(NULL, 0, do_recall_file, args, 0,
 	    minclsyspri);
 }
 

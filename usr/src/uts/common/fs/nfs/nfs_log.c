@@ -1159,8 +1159,8 @@ nfsl_flush(struct nfsl_flush_args *args, model_t model)
 		/*
 		 * Do the work asynchronously
 		 */
-		(void) thread_create(NULL, 0, nfslog_do_flush,
-		    tparams, 0, &p0, TS_RUN, minclsyspri);
+		(void) zthread_create(NULL, 0, nfslog_do_flush,
+		    tparams, 0, minclsyspri);
 	}
 
 	return (error);
@@ -1247,7 +1247,7 @@ out:
 		 */
 		kmem_free(args->buff, args->buff_len);
 		kmem_free(tparams, sizeof (*tparams));
-		thread_exit();
+		zthread_exit();
 		/* NOTREACHED */
 	}
 

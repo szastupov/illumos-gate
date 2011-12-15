@@ -879,6 +879,7 @@ reaper_thread(caddr_t *arg)
 	table->dbt_db->db_shutdown_count--;
 	cv_signal(&table->dbt_db->db_shutdown_wait);
 	mutex_exit(table->dbt_db->db_lock);
+	zthread_exit();
 }
 
 static void
@@ -887,7 +888,7 @@ rfs4_start_reaper(rfs4_table_t *table)
 	if (table->dbt_max_cache_time == 0)
 		return;
 
-	(void) thread_create(NULL, 0, reaper_thread, table, 0, &p0, TS_RUN,
+	(void) zthread_create(NULL, 0, reaper_thread, table, 0,
 	    minclsyspri);
 }
 
