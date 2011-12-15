@@ -325,6 +325,9 @@ sharetab_zone_fini(zoneid_t zoneid, void *data)
 {
 	sharetab_globals_t *sg = (sharetab_globals_t*)data;
 
+	rw_destroy(&sg->sharefs_lock);
+	rw_destroy(&sg->sharetab_lock);
+
 	kmem_free(sg, sizeof (*sg));
 }
 
