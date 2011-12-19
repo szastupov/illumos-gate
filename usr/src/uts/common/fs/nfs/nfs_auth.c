@@ -61,7 +61,8 @@
 typedef enum nfsauth_refreshq_thread_state {
 	REFRESHQ_THREAD_RUNNING,
 	REFRESHQ_THREAD_FINI_REQ,
-	REFRESHQ_THREAD_HALTED
+	REFRESHQ_THREAD_HALTED,
+	REFRESHQ_THREAD_NEED_CREATE
 } nfsauth_refreshq_thread_state_t;
 
 typedef struct nfsauth_globals {
@@ -237,14 +238,7 @@ nfsauth_zone_init(zoneid_t zoneid)
 
 	nag->refreshq_dead_entries = NULL;
 	cv_init(&nag->refreshq_cv, NULL, CV_DEFAULT, NULL);
-	nag->refreshq_thread_state = REFRESHQ_THREAD_HALTED;
-
-	/*
-	 * Launch nfsauth refresh thread
-	 */
-	nag->refreshq_thread_state = REFRESHQ_THREAD_RUNNING;
-	(void) zthread_create(NULL, 0, nfsauth_refresh_thread,
-						  nag, 0, minclsyspri);
+	nag->refreshq_thread_state = REFRESHQ_THREAD_NEED_CREATE;
 
 	return (nag);
 }
@@ -263,7 +257,7 @@ nfsauth_zone_shutdown(zoneid_t zoneid, void *data)
 	 * work.
 	 */
 	mutex_enter(&nag->refreshq_lock);
-	if (nag->refreshq_thread_state != REFRESHQ_THREAD_HALTED) {
+	if (nag->refreshq_thread_state == REFRESHQ_THREAD_RUNNING) {
 		nag->refreshq_thread_state = REFRESHQ_THREAD_FINI_REQ;
 		cv_broadcast(&nag->refreshq_cv);
 
@@ -306,8 +300,6 @@ static void
 nfsauth_zone_fini(zoneid_t zoneid, void *data)
 {
 	nfsauth_globals_t	*nag = data;
-
-	ASSERT(nag->refreshq_thread_state == REFRESHQ_THREAD_HALTED);
 
 	list_destroy(&nag->refreshq_queue);
 	cv_destroy(&nag->refreshq_cv);
@@ -875,6 +867,16 @@ nfsauth_cache_get(struct exportinfo *exi, struct svc_req *req, int flavor)
 			ran->ran_auth = p;
 
 			mutex_enter(&nag->refreshq_lock);
+
+			if (nag->refreshq_thread_state == REFRESHQ_THREAD_NEED_CREATE) {
+				/*
+				 * Launch nfsauth refresh thread
+				 */
+				nag->refreshq_thread_state = REFRESHQ_THREAD_RUNNING;
+				(void) zthread_create(NULL, 0, nfsauth_refresh_thread,
+									  nag, 0, minclsyspri);
+			}
+
 			/*
 			 * We should not add a work queue
 			 * item if the thread is not
