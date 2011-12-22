@@ -20,6 +20,7 @@
  */
 
 /*
+ * Copyright 2011 Nexenta Systems, Inc.  All rights reserved.
  * Copyright 2007 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
  */
@@ -223,6 +224,7 @@ sharefs_open(vnode_t **vpp, int flag, cred_t *cr, caller_context_t *ct)
 	vnode_t		*ovp = *vpp;
 	shnode_t	*sft;
 	int		error = 0;
+	sharetab_globals_t *sg;
 
 	if (flag & FWRITE)
 		return (EINVAL);
@@ -262,7 +264,8 @@ sharefs_open(vnode_t **vpp, int flag, cred_t *cr, caller_context_t *ct)
 	 * are dumping an extremely huge sharetab, we make a copy
 	 * of it here and use it to dump instead.
 	 */
-	error = sharefs_snap_create(sharetab_get_globals(vp->v_vfsp->vfs_zone), sft);
+	sg = sharetab_get_globals(vp->v_vfsp->vfs_zone);
+	error = sharefs_snap_create(sg, sft);
 
 	return (error);
 }

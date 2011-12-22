@@ -20,6 +20,7 @@
  */
 
 /*
+ * Copyright 2011 Nexenta Systems, Inc.  All rights reserved.
  * Copyright (c) 2007, 2010, Oracle and/or its affiliates. All rights reserved.
  */
 
@@ -300,6 +301,7 @@ sharefs_add(sharetab_globals_t *sg, share_t *sh, sharefs_lens_t *shl)
 	return (0);
 }
 
+/* ARGSUSED */
 static void *
 sharetab_zone_init(zoneid_t zoneid)
 {
@@ -320,10 +322,11 @@ sharetab_zone_init(zoneid_t zoneid)
 	return (sg);
 }
 
+/* ARGSUSED */
 static void
 sharetab_zone_fini(zoneid_t zoneid, void *data)
 {
-	sharetab_globals_t *sg = (sharetab_globals_t*)data;
+	sharetab_globals_t *sg = data;
 
 	rw_destroy(&sg->sharefs_lock);
 	rw_destroy(&sg->sharetab_lock);
@@ -341,7 +344,10 @@ sharefs_sharetab_init(void)
 sharetab_globals_t *
 sharetab_get_globals(zone_t *zone)
 {
-	return zone_getspecific(sharetab_zone_key, zone);
+	sharetab_globals_t *sg = zone_getspecific(sharetab_zone_key, zone);
+	ASSERT(sg != NULL);
+
+	return (sg);
 }
 
 int
